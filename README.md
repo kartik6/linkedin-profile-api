@@ -6,8 +6,9 @@ A hosted API. Send a LinkedIn profile URL. Get structured JSON back.
 curl "https://linkedin-profile-api.fly.dev/api/v1/profile?url=https://www.linkedin.com/in/satyanadella/"
 ```
 
-**Live API:** `https://linkedin-profile-api.fly.dev` — *(replace after you deploy)*
-**Docs:** [`/docs`](https://linkedin-profile-api.fly.dev/docs) — interactive OpenAPI reference.
+**Live API:** https://linkedin-profile-api.fly.dev
+**Docs:** https://linkedin-profile-api.fly.dev/docs — interactive OpenAPI reference.
+**Source:** https://github.com/kartik6/linkedin-profile-api
 
 ---
 
@@ -432,17 +433,20 @@ success rate.
 
 ```bash
 fly auth login
-fly launch --no-deploy          # keeps the fly.toml in this repo
+fly apps create linkedin-profile-api      # the name is global on Fly
+fly deploy --remote-only                  # no local Docker daemon needed
 
-# Secrets live in Fly, never in git.
+# Secrets live in Fly, never in git. Add them after the first deploy.
 fly secrets set \
   LI_AT='AQEDAT...' \
-  JSESSIONID='ajax:1234567890123456789' \
-  API_KEYS='a-key-you-choose'
+  JSESSIONID='ajax:1234567890123456789'
 
-fly deploy
 fly open /docs
 ```
+
+The first deploy works with no cookie. `/health`, `/docs`, `/api/v1/parse` and
+the `public_jsonld` strategy all answer. `fly secrets set` restarts the machine
+and switches the other three strategies on.
 
 Fly terminates TLS, so HTTPS works with no extra work. `force_https = true` in
 `fly.toml` redirects plain HTTP.
