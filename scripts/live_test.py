@@ -93,15 +93,16 @@ async def main() -> int:
 
         rule("VERDICT")
         failed = [w for w in m.warnings if "failed" in w]
-        if not failed and p.experience and p.education:
-            print("  PASS  Every section came back. The code works from this network.")
-            print("        The deployment failing means the datacenter address is the trigger.")
-        elif p.experience and failed:
-            print("  PARTIAL  Some sections failed, same as the deployment.")
-            print("           So the call pattern, not the IP, is what LinkedIn objects to.")
+        if not failed:
+            print("  PASS  Every section call succeeded.")
+            print("        An empty section means the person has none, not that we failed.")
+        elif any("session_invalid" in w for w in failed):
+            print("  FAIL  LinkedIn revoked the session part way through.")
+            print("        Check that liap=true is being sent. Compare a working")
+            print("        request with Copy as cURL before changing anything else.")
         else:
-            print("  See the warnings above.")
-        return 0
+            print("  PARTIAL  Some sections failed. See the warnings above.")
+        return 0 if not failed else 1
     finally:
         await client.aclose()
 
