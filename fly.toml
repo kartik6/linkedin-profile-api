@@ -6,6 +6,11 @@
 #
 # Set the secrets before the first deploy:
 #   fly secrets set LI_AT=... JSESSIONID='ajax:...' API_KEYS=...
+#
+# Deploy with --ha=false. Fly creates two machines by default. This service
+# must run one. The outbound rate limiter and the cache both live in process
+# memory, so a second machine doubles the call rate toward LinkedIn and halves
+# the cache hit rate. Set REDIS_URL and add a shared limiter before you scale.
 
 app = "linkedin-profile-api"
 primary_region = "sin"          # Singapore. Move this near your account's country.

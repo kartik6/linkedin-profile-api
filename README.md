@@ -434,7 +434,7 @@ success rate.
 ```bash
 fly auth login
 fly apps create linkedin-profile-api      # the name is global on Fly
-fly deploy --remote-only                  # no local Docker daemon needed
+fly deploy --remote-only --ha=false       # one machine. See the note below.
 
 # Secrets live in Fly, never in git. Add them after the first deploy.
 fly secrets set \
@@ -447,6 +447,19 @@ fly open /docs
 The first deploy works with no cookie. `/health`, `/docs`, `/api/v1/parse` and
 the `public_jsonld` strategy all answer. `fly secrets set` restarts the machine
 and switches the other three strategies on.
+
+**Run one machine.** Fly creates two by default, for high availability. This
+service must run one, because the outbound rate limiter and the cache both live
+in process memory:
+
+- Two machines double the call rate toward LinkedIn. `OUTBOUND_RPS` is a per
+  process budget, and the two machines do not coordinate. Request rate is the
+  main signal LinkedIn uses to decide to challenge a session.
+- Two machines halve the cache hit rate. Each holds its own cache, so the same
+  profile can reach LinkedIn twice.
+
+Set `REDIS_URL` and add a shared limiter before you scale past one. See
+[known limitations](#known-limitations).
 
 Fly terminates TLS, so HTTPS works with no extra work. `force_https = true` in
 `fly.toml` redirects plain HTTP.
