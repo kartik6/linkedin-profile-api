@@ -331,17 +331,28 @@ class LinkedInClient:
             return {"url": url, "transport_error": str(exc)}
 
         body = response.text[:280].replace("\n", " ")
-        set_cookies = [
-            value.split("=", 1)[0]
-            for key, value in response.headers.multi_items()
-            if key.lower() == "set-cookie"
-        ]
+        set_cookies = []
+        set_cookies_raw = []
+        for key, value in response.headers.multi_items():
+            if key.lower() != "set-cookie":
+                continue
+            name, _, rest = value.partition("=")
+            set_cookies.append(name)
+            # Keep every attribute, redact the secret. Domain, Path, SameSite
+            # and Secure decide whether a jar will accept a cookie at all, so
+            # they are exactly what we need to see.
+            attributes = rest.split(";")[1:]
+            set_cookies_raw.append(
+                f"{name}=<redacted>;" + ";".join(attributes) if attributes else f"{name}=<redacted>"
+            )
         return {
             "url": url,
             "authenticated": session is not None,
             "status": response.status_code,
             "location": response.headers.get("location"),
             "set_cookie": set_cookies,
+            "set_cookie_attributes": set_cookies_raw,
+            "jar_after": sorted((transport.cookies or {}).keys()),
             "cookies_sent": _cookie_names(response.request.headers.get("cookie")),
             "final_url": str(response.url),
             "redirects": len(response.history),
