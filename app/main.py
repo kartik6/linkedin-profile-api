@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import pathlib
 from contextlib import asynccontextmanager
 from typing import Annotated, Any
 
@@ -144,9 +145,17 @@ _ERRORS: dict[int | str, dict[str, Any]] = {
 }
 
 
+STATIC = pathlib.Path(__file__).parent / "static"
+
+
 @app.get("/", include_in_schema=False)
 async def index() -> HTMLResponse:
-    return HTMLResponse(_INDEX_HTML)
+    """The console. A thin lens over the API, served from the same origin.
+
+    Same origin matters: the page calls /api/v1/profile directly, so it needs
+    no CORS handling and no second deployment.
+    """
+    return HTMLResponse((STATIC / "index.html").read_text(encoding="utf-8"))
 
 
 @app.get("/health", tags=["ops"], summary="Liveness probe")
@@ -328,29 +337,3 @@ async def parse_only(url: str) -> dict[str, Any]:
         "canonical_url": ref.canonical_url,
         "input_kind": ref.source,
     }
-
-
-_INDEX_HTML = """<!doctype html>
-<meta charset="utf-8"><title>LinkedIn Profile API</title>
-<style>
- body{font:16px/1.6 ui-sans-serif,system-ui,-apple-system,sans-serif;max-width:44rem;
-      margin:4rem auto;padding:0 1.25rem;color:#111827;background:#fff}
- code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.875rem}
- pre{background:#f3f4f6;padding:1rem;border-radius:.5rem;overflow-x:auto}
- a{color:#0a66c2} h1{font-size:1.5rem;margin-bottom:.25rem}
- .muted{color:#6b7280} li{margin:.25rem 0}
- @media(prefers-color-scheme:dark){body{background:#0b0f14;color:#e5e7eb}
-   pre{background:#161b22} a{color:#58a6ff}}
-</style>
-<h1>LinkedIn Profile API</h1>
-<p class="muted">A LinkedIn profile URL in. Structured JSON out.</p>
-<pre>curl "$BASE/api/v1/profile?url=https://www.linkedin.com/in/satyanadella/"</pre>
-<ul>
-  <li><a href="/docs">/docs</a> - interactive OpenAPI reference</li>
-  <li><a href="/redoc">/redoc</a> - reference in one page</li>
-  <li><a href="/health">/health</a> - liveness</li>
-  <li><a href="/api/v1/strategies">/api/v1/strategies</a> - how a profile gets read</li>
-</ul>
-<p class="muted">Built for a hiring challenge. Read the repository README for
-the approach, the limits and the legal note.</p>
-"""

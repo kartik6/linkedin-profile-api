@@ -6,7 +6,7 @@ A hosted API. Send a LinkedIn profile URL. Get structured JSON back.
 curl "https://linkedin-profile-api.fly.dev/api/v1/profile?url=https://www.linkedin.com/in/satyanadella/"
 ```
 
-**Live API:** https://linkedin-profile-api.fly.dev
+**Live API:** https://linkedin-profile-api.fly.dev — paste a profile URL and read the JSON
 **Docs:** https://linkedin-profile-api.fly.dev/docs
 **Source:** https://github.com/kartik6/linkedin-profile-api
 
@@ -360,6 +360,7 @@ Up to 10 profiles, 3 at a time. One failure does not sink the batch.
 
 | Endpoint | Purpose |
 |---|---|
+| `GET /` | Console. Paste a URL, read the JSON three ways, copy it. |
 | `GET /health` | Liveness. No auth. |
 | `GET /api/v1/session` | Is the LinkedIn cookie still valid |
 | `GET /api/v1/diagnose?url=` | Raw status, landing URL and body head for each route |
@@ -509,11 +510,25 @@ To check the parsers against production:
 python scripts/capture.py https://www.linkedin.com/in/<name>/
 ```
 
+### The console
+
+`GET /` serves a single self-contained page: paste a profile URL, read the
+response as **formatted** JSON (default), an expandable **tree**, or a
+**compact** single line, and copy it with one button.
+
+It is served from the same origin as the API, so it calls `/api/v1/profile`
+directly with no CORS configuration and no second deployment. No framework, no
+CDN, no build step — one HTML file. It shows the `curl` equivalent of whatever
+you just ran, because the page is a lens on the API rather than a replacement
+for it.
+
 ### Layout
 
 ```
 app/
   main.py          HTTP routes, error handlers, OpenAPI
+  static/
+    index.html     the console. One file, no build step.
   models.py        the response schema — the contract
   config.py        settings; every secret comes from the environment
   cache.py         memory cache, optional Redis

@@ -1,0 +1,452 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LinkedIn Profile API</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0e141b; --panel:#141c26; --panel-2:#101821; --line:#22303f;
+  --ink:#dce5f0; --ink-dim:#8698ac; --ink-faint:#5b6d81;
+  --signal:#f0a63c; --ok:#4fb99f; --warn:#e0803c; --err:#e2635f;
+  --key:#7fc4e8;
+  --str-c:#a8d99b; --num-c:#e8b96b; --bool-c:#c99bf0; --null-c:#7c8b9e;
+  --radius:3px;
+}
+@media (prefers-color-scheme: light){
+  :root{
+    --bg:#f4f6f8; --panel:#ffffff; --panel-2:#eef1f5; --line:#d5dce4;
+    --ink:#16202b; --ink-dim:#55677a; --ink-faint:#8496a8;
+    --signal:#b46e05; --ok:#0f7d66; --warn:#a85a12; --err:#c0322e;
+    --key:#1d5c86; --str-c:#2f6b28; --num-c:#8a5a08; --bool-c:#6f3f9e; --null-c:#7c8b9e;
+  }
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--bg); color:var(--ink);
+  font-family:'Space Grotesk',system-ui,-apple-system,sans-serif;
+  font-size:15px; line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+}
+.mono{font-family:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace}
+.wrap{max-width:1080px;margin:0 auto;padding:0 20px 80px}
+
+/* ---- masthead ---- */
+header{border-bottom:1px solid var(--line);margin-bottom:28px}
+.mast{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;padding:26px 0 18px}
+h1{font-size:19px;font-weight:700;letter-spacing:-.01em;margin:0}
+.tag{
+  font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--signal);
+  border:1px solid var(--signal);border-radius:var(--radius);padding:2px 7px;
+}
+.sub{color:var(--ink-dim);font-size:13.5px;margin:0 0 22px;max-width:62ch}
+.sub a{color:var(--ink);text-decoration:underline;text-underline-offset:3px;text-decoration-color:var(--line)}
+.sub a:hover{text-decoration-color:var(--signal)}
+
+/* ---- console ---- */
+.console{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius)}
+.row{display:flex;gap:0;border-bottom:1px solid var(--line)}
+.row:last-child{border-bottom:0}
+.field{flex:1;display:flex;align-items:center;min-width:0}
+.field label{
+  font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.06em;
+  color:var(--ink-faint);padding:0 12px;text-transform:uppercase;white-space:nowrap;
+  border-right:1px solid var(--line);align-self:stretch;display:flex;align-items:center;
+}
+input[type=text],input[type=password]{
+  flex:1;min-width:0;background:transparent;border:0;outline:0;padding:15px 14px;
+  color:var(--ink);font-family:'JetBrains Mono',monospace;font-size:13.5px;
+}
+input::placeholder{color:var(--ink-faint)}
+input:focus-visible{background:var(--panel-2)}
+button{
+  font-family:'Space Grotesk',sans-serif;font-size:13.5px;font-weight:500;
+  background:transparent;color:var(--ink);border:0;cursor:pointer;
+}
+button:focus-visible{outline:2px solid var(--signal);outline-offset:-2px}
+.go{
+  background:var(--signal);color:#0e141b;font-weight:700;padding:0 26px;
+  border-left:1px solid var(--line);letter-spacing:.01em;
+}
+.go:hover{filter:brightness(1.08)}
+.go:disabled{opacity:.5;cursor:wait}
+@media (prefers-color-scheme: light){ .go{color:#fff} }
+
+/* ---- the signature: the request, made visible ---- */
+.trace{
+  display:flex;align-items:center;gap:10px;padding:11px 14px;
+  background:var(--panel-2);border-top:1px solid var(--line);
+  font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--ink-dim);
+  overflow-x:auto;white-space:nowrap;
+}
+.trace .p{color:var(--signal)}
+.trace code{flex:1;min-width:0}
+.mini{
+  font-family:'JetBrains Mono',monospace;font-size:10.5px;letter-spacing:.06em;
+  text-transform:uppercase;color:var(--ink-faint);border:1px solid var(--line);
+  border-radius:var(--radius);padding:3px 8px;background:var(--panel);flex-shrink:0;
+}
+.mini:hover{color:var(--ink);border-color:var(--ink-faint)}
+
+/* ---- readouts ---- */
+.readout{display:none;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));
+  gap:1px;background:var(--line);border:1px solid var(--line);
+  border-top:0;border-radius:0 0 var(--radius) var(--radius)}
+.readout.on{display:grid}
+.cell{background:var(--panel);padding:12px 14px}
+.cell dt{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--ink-faint);margin:0 0 5px}
+.cell dd{margin:0;font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:500}
+.meter{height:3px;background:var(--line);margin-top:7px;border-radius:2px;overflow:hidden}
+.meter i{display:block;height:100%;background:var(--signal);
+  transition:width .5s cubic-bezier(.2,.8,.2,1)}
+
+/* ---- sections ---- */
+.sections{display:none;flex-wrap:wrap;gap:6px;margin:16px 0 0}
+.sections.on{display:flex}
+.chip{
+  font-family:'JetBrains Mono',monospace;font-size:11.5px;
+  border:1px solid var(--line);border-radius:var(--radius);
+  padding:4px 9px;color:var(--ink-dim);background:var(--panel);
+}
+.chip b{color:var(--ink);font-weight:500}
+.chip.has{border-color:color-mix(in srgb,var(--ok) 45%,var(--line))}
+.chip.has b{color:var(--ok)}
+.chip.bad{border-color:color-mix(in srgb,var(--err) 55%,var(--line));color:var(--err)}
+
+/* ---- output ---- */
+.out{display:none;margin-top:22px;border:1px solid var(--line);border-radius:var(--radius);
+  background:var(--panel);overflow:hidden}
+.out.on{display:block}
+.bar{display:flex;align-items:center;gap:2px;padding:8px 10px;
+  border-bottom:1px solid var(--line);background:var(--panel-2);flex-wrap:wrap}
+.seg{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.05em;
+  text-transform:uppercase;padding:5px 11px;border-radius:var(--radius);color:var(--ink-faint)}
+.seg[aria-pressed=true]{background:var(--panel);color:var(--ink);
+  box-shadow:inset 0 0 0 1px var(--line)}
+.seg:hover{color:var(--ink)}
+.spacer{flex:1}
+pre{margin:0;padding:18px;overflow:auto;max-height:60vh;
+  font-family:'JetBrains Mono',monospace;font-size:12.5px;line-height:1.65;tab-size:2}
+pre.compact{white-space:pre-wrap;word-break:break-all}
+.k{color:var(--key)} .s{color:var(--str-c)} .n{color:var(--num-c)}
+.b{color:var(--bool-c)} .z{color:var(--null-c)}
+
+/* ---- tree ---- */
+.tree{padding:14px 18px;font-family:'JetBrains Mono',monospace;font-size:12.5px;
+  line-height:1.75;overflow:auto;max-height:60vh}
+.node{padding-left:15px;border-left:1px solid var(--line);margin-left:5px}
+.tw{cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:6px}
+.tw::before{content:'−';color:var(--signal);width:11px;display:inline-block;
+  font-weight:700;text-align:center}
+.tw.shut::before{content:'+'}
+.tw.shut+.node{display:none}
+.lbl{color:var(--key)}
+.cnt{color:var(--ink-faint);font-size:11px}
+.leaf{padding-left:32px}
+
+/* ---- states ---- */
+.msg{display:none;margin-top:22px;border:1px solid var(--line);
+  border-left:3px solid var(--err);border-radius:var(--radius);
+  padding:15px 17px;background:var(--panel)}
+.msg.on{display:block}
+.msg h3{margin:0 0 6px;font-size:13px;font-family:'JetBrains Mono',monospace;
+  color:var(--err);letter-spacing:.04em;text-transform:uppercase}
+.msg p{margin:0;font-size:13.5px;color:var(--ink-dim)}
+.msg code{font-family:'JetBrains Mono',monospace;font-size:12.5px;color:var(--ink)}
+.hint{margin-top:11px;font-size:12.5px;color:var(--ink-faint)}
+
+.warns{display:none;margin-top:14px;font-size:12.5px;color:var(--warn)}
+.warns.on{display:block}
+.warns div{font-family:'JetBrains Mono',monospace;font-size:11.5px;margin-top:4px}
+
+footer{margin-top:44px;padding-top:18px;border-top:1px solid var(--line);
+  font-size:12.5px;color:var(--ink-faint);display:flex;gap:18px;flex-wrap:wrap}
+footer a{color:var(--ink-dim);text-decoration:none}
+footer a:hover{color:var(--signal)}
+
+.spin{display:inline-block;width:9px;height:9px;border:1.5px solid currentColor;
+  border-right-color:transparent;border-radius:50%;animation:sp .7s linear infinite;
+  vertical-align:-1px;margin-right:7px}
+@keyframes sp{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){
+  *{animation-duration:.01ms!important;transition-duration:.01ms!important}
+}
+@media (max-width:640px){
+  .row{flex-wrap:wrap}
+  .go{width:100%;padding:14px}
+  .field label{padding:0 10px}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="mast">
+      <h1>LinkedIn Profile API</h1>
+      <span class="tag">Voyager</span>
+    </div>
+    <p class="sub">
+      A profile URL in, structured JSON out. Reads LinkedIn's private Voyager API
+      directly over HTTP — no browser. This page is a lens on the API;
+      see <a href="/docs">/docs</a> for the full reference.
+    </p>
+  </header>
+
+  <div class="console">
+    <div class="row">
+      <div class="field">
+        <label for="u">URL</label>
+        <input id="u" type="text" spellcheck="false" autocomplete="off"
+               placeholder="https://www.linkedin.com/in/satyanadella/"
+               value="https://www.linkedin.com/in/satyanadella/">
+      </div>
+      <button class="go" id="go">Fetch profile</button>
+    </div>
+    <div class="row" id="keyrow" hidden>
+      <div class="field">
+        <label for="k">API key</label>
+        <input id="k" type="password" spellcheck="false" autocomplete="off"
+               placeholder="only if the server sets API_KEYS">
+      </div>
+    </div>
+    <div class="trace">
+      <span class="p">$</span>
+      <code id="curl" class="mono"></code>
+      <button class="mini" id="copycurl">Copy</button>
+    </div>
+    <dl class="readout" id="meta">
+      <div class="cell"><dt>Strategy</dt><dd id="m-strat">—</dd></div>
+      <div class="cell"><dt>Completeness</dt><dd id="m-comp">—</dd>
+        <div class="meter"><i id="m-bar" style="width:0"></i></div></div>
+      <div class="cell"><dt>Elapsed</dt><dd id="m-ms">—</dd></div>
+      <div class="cell"><dt>Source</dt><dd id="m-cache">—</dd></div>
+    </dl>
+  </div>
+
+  <div class="sections" id="chips"></div>
+  <div class="warns" id="warns"></div>
+
+  <div class="msg" id="err">
+    <h3 id="err-code">error</h3>
+    <p id="err-msg"></p>
+    <p class="hint" id="err-hint"></p>
+  </div>
+
+  <div class="out" id="out">
+    <div class="bar">
+      <button class="seg" id="v-fmt"  aria-pressed="true">Formatted</button>
+      <button class="seg" id="v-tree" aria-pressed="false">Tree</button>
+      <button class="seg" id="v-min"  aria-pressed="false">Compact</button>
+      <span class="spacer"></span>
+      <button class="mini" id="copy">Copy JSON</button>
+    </div>
+    <pre id="pane" class="mono"></pre>
+    <div class="tree" id="treepane" hidden></div>
+  </div>
+
+  <footer>
+    <a href="/docs">API reference</a>
+    <a href="/health">Health</a>
+    <a href="/api/v1/session">Session status</a>
+    <a href="https://github.com/kartik6/linkedin-profile-api">Source</a>
+  </footer>
+</div>
+
+<script>
+(function(){
+  const $ = id => document.getElementById(id);
+  const u=$('u'), k=$('k'), go=$('go'), pane=$('pane'), treepane=$('treepane');
+  const out=$('out'), meta=$('meta'), chips=$('chips'), warns=$('warns'), err=$('err');
+  let data=null, view='fmt';
+
+  // Remember the key locally. It never leaves this browser.
+  try{ const s=localStorage.getItem('lpapi_key'); if(s){k.value=s; $('keyrow').hidden=false;} }catch(e){}
+  try{ if(new URLSearchParams(location.search).has('key')) $('keyrow').hidden=false; }catch(e){}
+
+  const esc = s => s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+  function paint(json){
+    return esc(json).replace(
+      /("(\\.|[^"\\])*"(\s*:)?|\b(true|false)\b|\bnull\b|-?\d+\.?\d*(?:[eE][+-]?\d+)?)/g,
+      m => {
+        let c='n';
+        if(m[0]==='"') c = /:\s*$/.test(m) ? 'k' : 's';
+        else if(m==='true'||m==='false') c='b';
+        else if(m==='null') c='z';
+        return '<span class="'+c+'">'+m+'</span>';
+      });
+  }
+
+  function treeOf(val, label){
+    const wrap=document.createElement('div');
+    const isArr=Array.isArray(val);
+    const isObj=val && typeof val==='object';
+    if(!isObj){
+      const l=document.createElement('div'); l.className='leaf';
+      let cls='n', txt=String(val);
+      if(val===null){cls='z';txt='null';}
+      else if(typeof val==='string'){cls='s';txt=JSON.stringify(val);}
+      else if(typeof val==='boolean')cls='b';
+      l.innerHTML=(label!==null?'<span class="lbl">'+esc(label)+'</span>: ':'')+
+                  '<span class="'+cls+'">'+esc(txt)+'</span>';
+      return l;
+    }
+    const keys=isArr?val.map((_,i)=>i):Object.keys(val);
+    const t=document.createElement('div'); t.className='tw'; t.tabIndex=0;
+    t.setAttribute('role','button');
+    t.innerHTML=(label!==null?'<span class="lbl">'+esc(label)+'</span> ':'')+
+      '<span class="cnt">'+(isArr?'['+keys.length+']':'{'+keys.length+'}')+'</span>';
+    const kids=document.createElement('div'); kids.className='node';
+    keys.forEach(key=>kids.appendChild(treeOf(val[key], isArr?String(key):key)));
+    const toggle=()=>t.classList.toggle('shut');
+    t.onclick=toggle;
+    t.onkeydown=e=>{ if(e.key==='Enter'||e.key===' '){e.preventDefault();toggle();} };
+    wrap.appendChild(t); wrap.appendChild(kids);
+    return wrap;
+  }
+
+  function render(){
+    if(!data) return;
+    const isTree = view==='tree';
+    pane.hidden=isTree; treepane.hidden=!isTree;
+    if(isTree){
+      treepane.innerHTML='';
+      treepane.appendChild(treeOf(data,null));
+    } else if(view==='min'){
+      pane.className='mono compact';
+      pane.innerHTML=paint(JSON.stringify(data));
+    } else {
+      pane.className='mono';
+      pane.innerHTML=paint(JSON.stringify(data,null,2));
+    }
+    for(const [id,v] of [['v-fmt','fmt'],['v-tree','tree'],['v-min','min']])
+      $(id).setAttribute('aria-pressed', String(view===v));
+  }
+  $('v-fmt').onclick =()=>{view='fmt'; render();};
+  $('v-tree').onclick=()=>{view='tree';render();};
+  $('v-min').onclick =()=>{view='min'; render();};
+
+  function flash(btn,text){
+    const old=btn.textContent; btn.textContent=text;
+    setTimeout(()=>btn.textContent=old,1400);
+  }
+  async function toClipboard(text,btn){
+    try{ await navigator.clipboard.writeText(text); flash(btn,'Copied'); }
+    catch(e){
+      const ta=document.createElement('textarea'); ta.value=text;
+      ta.style.position='fixed'; ta.style.opacity='0';
+      document.body.appendChild(ta); ta.select();
+      try{ document.execCommand('copy'); flash(btn,'Copied'); }
+      catch(e2){ flash(btn,'Press Cmd+C'); }
+      document.body.removeChild(ta);
+    }
+  }
+  $('copy').onclick = e => {
+    if(!data) return;
+    const text = view==='min' ? JSON.stringify(data) : JSON.stringify(data,null,2);
+    toClipboard(text, e.currentTarget);
+  };
+  $('copycurl').onclick = e => toClipboard($('curl').textContent, e.currentTarget);
+
+  function curlLine(){
+    const target = location.origin + '/api/v1/profile?url=' + encodeURIComponent(u.value.trim());
+    return 'curl "' + target + '"' + (k.value ? ' -H "X-API-Key: ' + k.value + '"' : '');
+  }
+  const syncCurl = () => $('curl').textContent = curlLine();
+  u.oninput = syncCurl; k.oninput = syncCurl; syncCurl();
+
+  const SECTIONS=['experience','education','skills','certifications','languages',
+                  'projects','honors','volunteering','publications','courses',
+                  'patents','organizations','test_scores'];
+
+  function showResult(body){
+    data=body;
+    const p=body.profile||{}, m=body.meta||{};
+    $('m-strat').textContent = m.strategy || '—';
+    $('m-comp').textContent  = m.completeness!=null ? Math.round(m.completeness*100)+'%' : '—';
+    $('m-bar').style.width   = ((m.completeness||0)*100)+'%';
+    $('m-ms').textContent    = m.duration_ms!=null ? m.duration_ms+' ms' : '—';
+    $('m-cache').textContent = m.cached ? 'cache' : 'linkedin';
+    meta.classList.add('on');
+
+    const failed = new Set();
+    (m.warnings||[]).forEach(w=>{
+      const hit=/Section (\w+) failed/.exec(w);
+      if(hit) failed.add(hit[1].replace(/^profile/,'').toLowerCase());
+    });
+    chips.innerHTML='';
+    SECTIONS.forEach(name=>{
+      const items=p[name]; if(!Array.isArray(items)) return;
+      const c=document.createElement('span');
+      const bad=[...failed].some(f=>name.replace('_','').startsWith(f.slice(0,6)));
+      c.className='chip'+(bad?' bad':items.length?' has':'');
+      c.innerHTML=name.replace(/_/g,' ')+' <b>'+items.length+'</b>';
+      chips.appendChild(c);
+    });
+    chips.classList.add('on');
+
+    const ws=(m.warnings||[]);
+    warns.innerHTML = ws.length ? '<strong>'+ws.length+' warning'+(ws.length>1?'s':'')+'</strong>'
+      + ws.map(w=>'<div>'+esc(w)+'</div>').join('') : '';
+    warns.classList.toggle('on', ws.length>0);
+
+    err.classList.remove('on');
+    out.classList.add('on');
+    render();
+  }
+
+  const HINTS={
+    invalid_profile_url:'Use a member profile URL. Company and school pages are not supported.',
+    profile_not_found:'LinkedIn has no profile at that identifier. Check the spelling.',
+    unauthorized:'This server has API_KEYS set. Enter a key above.',
+    rate_limited:'Our own per-caller limit. Wait a moment and try again.',
+    linkedin_rate_limited:'LinkedIn throttled the server. Try again shortly.',
+    linkedin_session_invalid:'The server\u2019s LinkedIn cookie expired. An operator must replace it.',
+    linkedin_challenge_required:'LinkedIn asked for a human check. An operator must clear it.',
+    no_linkedin_session:'The server has no LinkedIn cookie configured.',
+    all_strategies_failed:'Every fetch route failed. Check /api/v1/session.'
+  };
+
+  function showError(code,message){
+    $('err-code').textContent=code||'error';
+    $('err-msg').textContent=message||'Something went wrong.';
+    $('err-hint').textContent=HINTS[code]||'';
+    if(code==='unauthorized') $('keyrow').hidden=false;
+    err.classList.add('on');
+    out.classList.remove('on'); meta.classList.remove('on');
+    chips.classList.remove('on'); warns.classList.remove('on');
+  }
+
+  async function fetchProfile(){
+    const url=u.value.trim();
+    if(!url){ u.focus(); return; }
+    go.disabled=true;
+    const label=go.textContent;
+    go.innerHTML='<span class="spin"></span>Fetching';
+    err.classList.remove('on');
+    try{
+      const headers={};
+      if(k.value){ headers['X-API-Key']=k.value; try{localStorage.setItem('lpapi_key',k.value);}catch(e){} }
+      const res=await fetch('/api/v1/profile?url='+encodeURIComponent(url),{headers});
+      const body=await res.json();
+      if(!res.ok||body.error) showError(body.error, body.message);
+      else showResult(body);
+    }catch(e){
+      showError('network_error','Could not reach the API. '+e.message);
+    }finally{
+      go.disabled=false; go.textContent=label;
+    }
+  }
+  go.onclick=fetchProfile;
+  u.onkeydown=e=>{ if(e.key==='Enter') fetchProfile(); };
+  k.onkeydown=e=>{ if(e.key==='Enter') fetchProfile(); };
+})();
+</script>
+</body>
+</html>

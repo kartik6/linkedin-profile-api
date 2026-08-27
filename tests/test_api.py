@@ -207,3 +207,37 @@ class TestRateLimit:
         finally:
             get_settings.cache_clear()
             app.deps._limiter = None
+
+
+class TestConsole:
+    """The page at / is the reviewer facing surface, so it must not silently break."""
+
+    def test_it_is_served(self, client):
+        response = client.get("/")
+        assert response.status_code == 200
+        assert "text/html" in response.headers["content-type"]
+
+    def test_it_carries_the_console_markup(self, client):
+        body = client.get("/").text
+        for required in ('id="u"', 'id="go"', 'id="pane"', 'id="treepane"'):
+            assert required in body
+
+    def test_all_three_views_and_copy_are_present(self, client):
+        body = client.get("/").text
+        for control in ('id="v-fmt"', 'id="v-tree"', 'id="v-min"', 'id="copy"'):
+            assert control in body
+
+    def test_it_loads_no_third_party_scripts(self, client):
+        """Self contained apart from fonts. No CDN, no analytics, no framework."""
+        body = client.get("/").text.lower()
+        assert "cdn" not in body
+        assert "unpkg" not in body
+        assert "jsdelivr" not in body
+        for allowed in ("fonts.googleapis.com", "fonts.gstatic.com"):
+            assert allowed in body
+
+    def test_it_calls_the_api_on_the_same_origin(self, client):
+        """A relative path, so the page works on any host with no CORS setup."""
+        body = client.get("/").text
+        assert "'/api/v1/profile?url='" in body
+        assert "http://localhost" not in body
