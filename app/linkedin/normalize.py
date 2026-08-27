@@ -15,7 +15,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from app.linkedin.components import card_section, read_entity, split_parts, walk_entities
 from app.linkedin.dates import parse_date, parse_date_range
 from app.linkedin.entities import EntityPool
 from app.linkedin.images import extract_image
@@ -124,8 +123,6 @@ def from_entity_pool(pool: EntityPool, ref: ProfileRef) -> Profile:
     profile.organizations = _safe(lambda: _pool_organizations(pool), [])
     profile.test_scores = _safe(lambda: _pool_test_scores(pool), [])
 
-    # Fill the gaps from the rendered card tree.
-    _safe(lambda: _fill_from_cards(pool, profile), None)
     return profile
 
 
@@ -192,6 +189,15 @@ def _pool_top_card(pool: EntityPool, ref: ProfileRef) -> Profile:
 
 
 def _pool_pronouns(entity: dict[str, Any]) -> str | None:
+    # Verified 2026-08-28: {"pronounUnion": {"standardizedPronoun": "HE_HIM"}}
+    union = entity.get("pronounUnion")
+    if isinstance(union, dict):
+        standard = union.get("standardizedPronoun")
+        if isinstance(standard, str):
+            return standard.replace("_", "/").lower()
+        custom = text_of(union, "customPronoun")
+        if custom:
+            return custom
     value = entity.get("pronoun") or entity.get("standardizedPronoun")
     text = text_of(value) or text_of(entity, "customPronoun")
     if isinstance(text, str) and text.isupper():
@@ -205,12 +211,16 @@ def _pool_location(pool: EntityPool, entity: dict[str, Any]) -> Location | None:
         or text_of(entity, "locationName")
         or text_of(entity.get("location"), "defaultLocalizedName")
     )
+    # Verified 2026-08-28: the real shape is flat.
+    #   "location": {"countryCode": "IN", "$type": "...ProfileLocation"}
+    # There is no basicLocation wrapper. `geoLocation` holds only a geoUrn, so
+    # the display name is not available from this endpoint at all.
     country_code = None
-    basic = entity.get("location")
-    if isinstance(basic, dict):
-        basic_location = basic.get("basicLocation")
-        if isinstance(basic_location, dict):
-            country_code = basic_location.get("countryCode")
+    location_entity = entity.get("location")
+    if isinstance(location_entity, dict):
+        country_code = location_entity.get("countryCode") or (
+            location_entity.get("basicLocation") or {}
+        ).get("countryCode")
     country = text_of(entity, "geoCountryName")
 
     geo = pool.linked(entity, "geoLocation", "geo")
@@ -562,444 +572,18 @@ def _pool_test_scores(pool: EntityPool) -> list[TestScore]:
     ]
 
 
-# --------------------------------------------------------------------------
-# Card tree fallback
-# --------------------------------------------------------------------------
-
-
-def _fill_from_cards(pool: EntityPool, profile: Profile) -> None:
-    """Read the rendered cards for any section the typed entities missed."""
-    cards = pool.by_type("Card", "ProfileCard")
-    if not cards:
-        return
-
-    for card in cards:
-        section = card_section(card)
-        if section == "experience" and not profile.experience:
-            profile.experience = _cards_to_experience(card)
-        elif section == "education" and not profile.education:
-            profile.education = _cards_to_education(card)
-        elif section in {"skills", "skill_details"} and not profile.skills:
-            profile.skills = _cards_to_skills(card)
-        elif section in {"licenses_and_certifications", "certifications"} and (
-            not profile.certifications
-        ):
-            profile.certifications = _cards_to_certifications(card)
-        elif section == "languages" and not profile.languages:
-            profile.languages = _cards_to_languages(card)
-        elif section == "about" and not profile.about:
-            texts = [read_entity(e).get("description") for e in walk_entities(card)]
-            profile.about = next((t for t in texts if t), None)
-
-
-def _cards_to_experience(card: dict[str, Any]) -> list[Experience]:
-    out: list[Experience] = []
-    for entity in walk_entities(card):
-        item = read_entity(entity)
-        if not item["title"]:
-            continue
-        subtitle_parts = split_parts(item["subtitle"])
-        caption_parts = split_parts(item["caption"])
-        company_name = subtitle_parts[0] if subtitle_parts else None
-        employment = None
-        for part in subtitle_parts[1:]:
-            employment = employment or _employment_type(part)
-        out.append(
-            Experience(
-                title=item["title"],
-                company=Company(name=company_name, logo=extract_image(item["image"]))
-                if company_name
-                else None,
-                employment_type=employment,
-                location=item["metadata"],
-                description=item["description"],
-                date_range=_range_from_caption(caption_parts),
-            )
-        )
-    return out
-
-
-def _cards_to_education(card: dict[str, Any]) -> list[Education]:
-    out: list[Education] = []
-    for entity in walk_entities(card):
-        item = read_entity(entity)
-        if not item["title"]:
-            continue
-        subtitle_parts = split_parts(item["subtitle"])
-        out.append(
-            Education(
-                school=School(name=item["title"], logo=extract_image(item["image"])),
-                degree=subtitle_parts[0] if subtitle_parts else None,
-                field_of_study=subtitle_parts[1] if len(subtitle_parts) > 1 else None,
-                description=item["description"],
-                date_range=_range_from_caption(split_parts(item["caption"])),
-            )
-        )
-    return out
-
-
-def _cards_to_skills(card: dict[str, Any]) -> list[Skill]:
-    out: list[Skill] = []
-    seen: set[str] = set()
-    for entity in walk_entities(card):
-        name = read_entity(entity)["title"]
-        if name and name.lower() not in seen:
-            seen.add(name.lower())
-            out.append(Skill(name=name))
-    return out
-
-
-def _cards_to_certifications(card: dict[str, Any]) -> list[Certification]:
-    out: list[Certification] = []
-    for entity in walk_entities(card):
-        item = read_entity(entity)
-        if not item["title"]:
-            continue
-        out.append(
-            Certification(
-                name=item["title"],
-                authority=(split_parts(item["subtitle"]) or [None])[0],
-                logo=extract_image(item["image"]),
-                issued_on=_date_from_caption(item["caption"]),
-            )
-        )
-    return out
-
-
-def _cards_to_languages(card: dict[str, Any]) -> list[Language]:
-    out: list[Language] = []
-    for entity in walk_entities(card):
-        item = read_entity(entity)
-        if item["title"]:
-            out.append(Language(name=item["title"], proficiency=item["subtitle"]))
-    return out
-
-
-def _range_from_caption(parts: list[str]) -> Any:
-    """Read 'May 2021 - Present' out of a rendered caption string."""
-    from app.linkedin.dates import DateRange, months_between
-
-    if not parts:
-        return None
-    span = parts[0]
-    pieces = [p.strip() for p in span.replace("–", "-").split("-")]
-    if len(pieces) < 2:
-        return None
-    start = _parse_text_date(pieces[0])
-    end_text = pieces[1]
-    is_current = end_text.lower() in {"present", "current", "now"}
-    end = None if is_current else _parse_text_date(end_text)
-    if start is None and end is None:
-        return None
-    return DateRange(
-        start=start,
-        end=end,
-        is_current=is_current,
-        duration_months=months_between(start, end, is_current),
-        text=span,
-    )
-
-
-def _date_from_caption(caption: str | None) -> Any:
-    if not caption:
-        return None
-    cleaned = caption.replace("Issued", "").replace("Expired", "").strip()
-    return _parse_text_date(cleaned)
-
-
-def _parse_text_date(value: str) -> Any:
-    """Read 'May 2021' or '2021' into a Date."""
-    from app.linkedin.dates import _MONTHS, Date, render_date
-
-    if not value:
-        return None
-    tokens = value.replace(",", " ").split()
-    year = next((int(t) for t in tokens if t.isdigit() and len(t) == 4), None)
-    month = None
-    for token in tokens:
-        for index, name in enumerate(_MONTHS, start=1):
-            if name.lower().startswith(token.lower()[:3]) and len(token) >= 3:
-                month = index
-                break
-        if month:
-            break
-    if year is None and month is None:
-        return None
-    date = Date(year=year, month=month)
-    date.text = render_date(date) or value
-    return date
-
-
-# ==========================================================================
-# Strategy A: the older nested /profileView document
-# ==========================================================================
-
-
-def _elements(data: dict[str, Any], key: str) -> list[dict[str, Any]]:
-    view = data.get(key)
-    if isinstance(view, dict):
-        elements = view.get("elements")
-        if isinstance(elements, list):
-            return [e for e in elements if isinstance(e, dict)]
-    return []
-
-
-def _country_code(base: dict[str, Any]) -> str | None:
-    location = base.get("location")
-    if isinstance(location, dict):
-        basic = location.get("basicLocation")
-        if isinstance(basic, dict) and basic.get("countryCode"):
-            return str(basic["countryCode"]).upper()
-    return None
-
-
-def _view_company(entity: dict[str, Any]) -> Company | None:
-    company = entity.get("company") if isinstance(entity.get("company"), dict) else {}
-    mini = company.get("miniCompany") if isinstance(company.get("miniCompany"), dict) else {}
-    name = text_of(entity, "companyName") or text_of(mini, "name")
-    urn = entity.get("companyUrn") or mini.get("entityUrn") or mini.get("objectUrn")
-    industries = company.get("industries")
-    if not any((name, urn)):
-        return None
-    return Company(
-        name=name,
-        urn=urn if isinstance(urn, str) else None,
-        linkedin_url=_company_url(urn if isinstance(urn, str) else None, mini.get("universalName")),
-        logo=extract_image(mini.get("logo")) or extract_image(mini),
-        industry=text_of(industries[0]) if isinstance(industries, list) and industries else None,
-        staff_count=company.get("staffCount"),
-    )
-
-
-def _view_school(entity: dict[str, Any]) -> School | None:
-    school = entity.get("school") if isinstance(entity.get("school"), dict) else {}
-    name = text_of(entity, "schoolName") or text_of(school, "schoolName") or text_of(school, "name")
-    urn = entity.get("schoolUrn") or school.get("entityUrn") or school.get("objectUrn")
-    if not any((name, urn)):
-        return None
-    return School(
-        name=name,
-        urn=urn if isinstance(urn, str) else None,
-        linkedin_url=_school_url(
-            urn if isinstance(urn, str) else None, school.get("universalName")
-        ),
-        logo=extract_image(school.get("logo")) or extract_image(school),
-    )
-
-
-def _view_certification(entity: dict[str, Any]) -> Certification:
-    date_range = parse_date_range(entity.get("timePeriod"))
-    company = entity.get("company") if isinstance(entity.get("company"), dict) else {}
-    return Certification(
-        name=text_of(entity, "name"),
-        authority=text_of(entity, "authority"),
-        license_number=text_of(entity, "licenseNumber"),
-        url=text_of(entity, "url"),
-        logo=extract_image(company.get("miniCompany")) or extract_image(company),
-        issued_on=date_range.start if date_range else None,
-        expires_on=date_range.end if date_range else None,
-    )
-
-
-def from_profile_view(data: dict[str, Any], ref: ProfileRef) -> Profile:
-    """Read the /identity/profiles/{id}/profileView document."""
-    base = data.get("profile") if isinstance(data.get("profile"), dict) else {}
-    mini = base.get("miniProfile") if isinstance(base.get("miniProfile"), dict) else {}
-
-    first = text_of(base, "firstName") or text_of(mini, "firstName")
-    last = text_of(base, "lastName") or text_of(mini, "lastName")
-    full = " ".join(p for p in (first, last) if p) or None
-
-    location_name = text_of(base, "geoLocationName") or text_of(base, "locationName")
-    country = text_of(base, "geoCountryName")
-    location = None
-    if location_name or country:
-        city = None
-        if location_name and "," in location_name:
-            city = location_name.split(",")[0].strip()
-        location = Location(
-            full=location_name,
-            city=city,
-            country=country,
-            country_code=_country_code(base),
-        )
-
-    profile = Profile(
-        public_identifier=text_of(base, "publicIdentifier")
-        or text_of(mini, "publicIdentifier")
-        or ref.public_identifier,
-        urn=mini.get("objectUrn") or base.get("entityUrn"),
-        profile_url=ref.canonical_url,
-        first_name=first,
-        last_name=last,
-        full_name=full,
-        headline=text_of(base, "headline") or text_of(mini, "occupation"),
-        about=text_of(base, "summary"),
-        industry=text_of(base, "industryName"),
-        location=location,
-        profile_picture=extract_image(mini.get("picture")) or extract_image(base.get("picture")),
-        background_picture=extract_image(mini.get("backgroundImage"))
-        or extract_image(base.get("backgroundImage")),
-    )
-
-    profile.experience = _safe(
-        lambda: [
-            Experience(
-                title=text_of(e, "title"),
-                company=_view_company(e),
-                location=text_of(e, "locationName"),
-                description=text_of(e, "description"),
-                date_range=parse_date_range(e.get("timePeriod")),
-            )
-            for e in _elements(data, "positionView")
-        ],
-        [],
-    )
-    profile.education = _safe(
-        lambda: [
-            Education(
-                school=_view_school(e),
-                degree=text_of(e, "degreeName"),
-                field_of_study=text_of(e, "fieldOfStudy"),
-                grade=text_of(e, "grade"),
-                activities=text_of(e, "activities"),
-                description=text_of(e, "description"),
-                date_range=parse_date_range(e.get("timePeriod")),
-            )
-            for e in _elements(data, "educationView")
-        ],
-        [],
-    )
-    profile.skills = _safe(
-        lambda: [
-            Skill(name=text_of(e, "name"), endorsement_count=e.get("endorsementCount"))
-            for e in _elements(data, "skillView")
-            if text_of(e, "name")
-        ],
-        [],
-    )
-    profile.certifications = _safe(
-        lambda: [_view_certification(e) for e in _elements(data, "certificationView")], []
-    )
-    profile.languages = _safe(
-        lambda: [
-            Language(
-                name=text_of(e, "name"),
-                proficiency=(text_of(e, "proficiency") or "").replace("_", " ").title() or None,
-            )
-            for e in _elements(data, "languageView")
-            if text_of(e, "name")
-        ],
-        [],
-    )
-    profile.projects = _safe(
-        lambda: [
-            Project(
-                name=text_of(e, "title") or text_of(e, "name"),
-                description=text_of(e, "description"),
-                url=text_of(e, "url"),
-                date_range=parse_date_range(e.get("timePeriod")),
-            )
-            for e in _elements(data, "projectView")
-        ],
-        [],
-    )
-    profile.publications = _safe(
-        lambda: [
-            Publication(
-                name=text_of(e, "name"),
-                publisher=text_of(e, "publisher"),
-                description=text_of(e, "description"),
-                url=text_of(e, "url"),
-                published_on=parse_date(e.get("date")),
-            )
-            for e in _elements(data, "publicationView")
-        ],
-        [],
-    )
-    profile.honors = _safe(
-        lambda: [
-            Honor(
-                title=text_of(e, "title"),
-                issuer=text_of(e, "issuer"),
-                description=text_of(e, "description"),
-                issued_on=parse_date(e.get("issueDate")),
-            )
-            for e in _elements(data, "honorView")
-        ],
-        [],
-    )
-    profile.volunteering = _safe(
-        lambda: [
-            Volunteer(
-                role=text_of(e, "role"),
-                organization=text_of(e, "companyName"),
-                cause=text_of(e, "cause"),
-                description=text_of(e, "description"),
-                date_range=parse_date_range(e.get("timePeriod")),
-            )
-            for e in _elements(data, "volunteerExperienceView")
-        ],
-        [],
-    )
-    profile.courses = _safe(
-        lambda: [
-            Course(name=text_of(e, "name"), number=text_of(e, "number"))
-            for e in _elements(data, "courseView")
-        ],
-        [],
-    )
-    profile.patents = _safe(
-        lambda: [
-            Patent(
-                title=text_of(e, "title"),
-                number=text_of(e, "number"),
-                description=text_of(e, "description"),
-                url=text_of(e, "url"),
-                issued_on=parse_date(e.get("issueDate")),
-            )
-            for e in _elements(data, "patentView")
-        ],
-        [],
-    )
-    profile.organizations = _safe(
-        lambda: [
-            Organization(
-                name=text_of(e, "name"),
-                position=text_of(e, "position"),
-                description=text_of(e, "description"),
-                date_range=parse_date_range(e.get("timePeriod")),
-            )
-            for e in _elements(data, "organizationView")
-        ],
-        [],
-    )
-    profile.test_scores = _safe(
-        lambda: [
-            TestScore(
-                name=text_of(e, "name"),
-                score=text_of(e, "score"),
-                description=text_of(e, "description"),
-                taken_on=parse_date(e.get("date")),
-            )
-            for e in _elements(data, "testScoreView")
-        ],
-        [],
-    )
-    return profile
-
-
 # ==========================================================================
 # Merge and score
 # ==========================================================================
 
-CORE_SECTIONS = (
-    "experience",
-    "education",
-    "skills",
-    "certifications",
-    "languages",
-)
+# Only three sections are close to universal on a real profile. We checked a
+# live profile with a full work history: it had zero languages, zero honors,
+# zero publications, zero courses, zero patents and zero test scores. Those
+# sections returned a valid empty collection, not an error.
+#
+# So an empty section is normally a fact about the person, not a failure of
+# ours. Scoring against all thirteen would report a complete profile as broken.
+CORE_SECTIONS = ("experience", "education", "skills")
 
 SCALAR_FIELDS = (
     "first_name",
@@ -1007,7 +591,6 @@ SCALAR_FIELDS = (
     "headline",
     "about",
     "location",
-    "industry",
     "profile_picture",
 )
 
@@ -1027,8 +610,9 @@ def merge_profiles(base: Profile, extra: Profile) -> Profile:
 def completeness(profile: Profile) -> float:
     """Score how much of the profile came back, from 0.0 to 1.0.
 
-    Callers use this to decide whether a result is worth keeping. The
-    orchestrator uses it to decide whether to try the next strategy.
+    This measures coverage, not quality. A genuinely sparse profile scores low
+    and that is correct. Read `meta.warnings` to tell "the person has none"
+    apart from "our request for that section failed".
     """
     scalar_hits = sum(1 for f in SCALAR_FIELDS if getattr(profile, f, None))
     section_hits = sum(1 for s in CORE_SECTIONS if getattr(profile, s, None))

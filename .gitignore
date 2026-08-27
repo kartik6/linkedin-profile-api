@@ -23,3 +23,6 @@ captures/
 .vscode/
 .idea/
 .DS_Store
+
+# Local learning journal. Not part of the deliverable.
+LEARNING-NOTES.md

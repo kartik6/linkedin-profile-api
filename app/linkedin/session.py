@@ -22,12 +22,32 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
+import httpx
+
 from app.config import Settings
-from app.errors import NoSessionConfigured
+from app.errors import ChallengeRequired, NoSessionConfigured
 
 log = logging.getLogger(__name__)
 
 _JSESSIONID_RE = re.compile(r'"?(ajax:\d+)"?')
+
+# Paths LinkedIn redirects to when it wants a human rather than a client.
+_CHALLENGE_MARKERS = ("/checkpoint/", "/authwall", "/uas/login", "/login")
+
+
+async def _watch_redirects(response: httpx.Response) -> None:
+    """Name a bot check at the moment of the redirect, not after following it.
+
+    We follow redirects, because LinkedIn uses one to hand out its routing
+    cookie. But that means we normally only see where we landed. If the
+    challenge page itself fails to load, the reason for the failure is lost and
+    the caller gets a generic transport error.
+
+    Reading the Location header here catches it either way.
+    """
+    location = response.headers.get("location", "")
+    if location and any(marker in location for marker in _CHALLENGE_MARKERS):
+        raise ChallengeRequired(f"LinkedIn redirected to a check page: {location}")
 
 # Cooling off period after a session fails, in seconds.
 _QUARANTINE_S = 900
@@ -42,6 +62,7 @@ class LinkedInSession:
     quarantined_until: float = 0.0
     last_used: float = 0.0
     requests: int = 0
+    _client: httpx.AsyncClient | None = field(default=None, repr=False)
 
     @property
     def csrf_token(self) -> str:
@@ -62,6 +83,36 @@ class LinkedInSession:
             "JSESSIONID": f'"{self.csrf_token}"',
             "lang": "v=2&lang=en-us",
         }
+
+    def client(self, *, user_agent: str, timeout: float) -> httpx.AsyncClient:
+        """Return this session's HTTP client, and build it on first use.
+
+        Each session keeps its own client, and therefore its own cookie jar.
+        That matters. LinkedIn answers a request that lacks its routing cookie
+        with a 302 back to the same URL, plus a `Set-Cookie: lidc=...`. A client
+        that stores the cookie and follows the redirect gets a 200 on the second
+        try. A client that sends a fixed cookie dict on every request never
+        stores `lidc`, so it is redirected forever.
+
+        We observed exactly that: the browser succeeded while our service saw a
+        302 on every route, including `/me`.
+        """
+        if self._client is None:
+            self._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(timeout),
+                follow_redirects=True,
+                max_redirects=5,
+                headers={"user-agent": user_agent},
+                cookies=self.cookies,
+                http2=True,
+                event_hooks={"response": [_watch_redirects]},
+            )
+        return self._client
+
+    async def aclose(self) -> None:
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
 
     def headers(self, *, referer: str | None = None, accept: str | None = None) -> dict[str, str]:
         track = {
@@ -115,8 +166,10 @@ class LinkedInSession:
             )
 
     def status(self) -> dict[str, object]:
+        jar = self._client.cookies if self._client else {}
         return {
             "label": self.label,
+            "cookies_held": sorted(jar.keys()) if jar else [],
             "healthy": self.healthy,
             "failures": self.failures,
             "requests": self.requests,
@@ -156,3 +209,7 @@ class SessionPool:
 
     def status(self) -> list[dict[str, object]]:
         return [s.status() for s in self.sessions]
+
+    async def aclose(self) -> None:
+        for session in self.sessions:
+            await session.aclose()

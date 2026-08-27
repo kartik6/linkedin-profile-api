@@ -42,7 +42,7 @@ class Settings(BaseSettings):
 
     # --- pacing. These protect the LinkedIn account, not our server. ---
     outbound_rps: float = Field(
-        default=0.5, description="Requests per second toward LinkedIn, across all callers."
+        default=1.0, description="Requests per second toward LinkedIn, across all callers."
     )
     outbound_jitter_ms: int = 400
     request_timeout_s: float = 20.0
@@ -59,23 +59,15 @@ class Settings(BaseSettings):
     batch_concurrency: int = 3
 
     # --- strategy control ---
-    # Order matters. The orchestrator walks this list and stops at the first win.
     strategies: Annotated[list[str], NoDecode] = Field(
-        default_factory=lambda: [
-            "voyager_profile_view",
-            "voyager_dash",
-            "embedded_json",
-            "public_jsonld",
-        ]
-    )
-    # LinkedIn rotates these GraphQL query hashes. Override them here without a
-    # code change when a call starts to fail.
-    query_id_profile: str = "voyagerIdentityDashProfiles.4dd8fc2b8d1e4b0e2f0a1e9c9f2b8a11"
-    query_id_profile_components: str = (
-        "voyagerIdentityDashProfileComponents.9b2a1e5c3d7f4a6b8c0d2e4f6a8b0c22"
+        default_factory=lambda: ["voyager_dash"]
     )
 
-    @field_validator("api_keys", "li_at_pool", "strategies", mode="before")
+    # Which profile sections to fetch. Each one costs a request to LinkedIn, so
+    # a shorter list is faster and safer for the account. Empty means all.
+    sections: Annotated[list[str], NoDecode] = Field(default_factory=list)
+
+    @field_validator("api_keys", "li_at_pool", "strategies", "sections", mode="before")
     @classmethod
     def _split_csv(cls, v: object) -> object:
         if isinstance(v, str):

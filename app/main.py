@@ -60,7 +60,8 @@ async def lifespan(app: FastAPI):
     )
     if not client.pool.configured:
         log.warning(
-            "No LI_AT cookie is set. Only the public_jsonld strategy can run."
+            "No LI_AT cookie is set. Every strategy needs one, so requests will "
+            "fail with no_linkedin_session until you set LI_AT and JSESSIONID."
         )
     yield
     await client.aclose()

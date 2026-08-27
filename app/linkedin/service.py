@@ -64,6 +64,7 @@ class ProfileService:
         tried: list[str] = []
         warnings: list[str] = []
         errors: dict[str, str] = {}
+        failures: list[LinkedInAPIError] = []
         not_found_votes = 0
         have_session = self.client.pool.configured
 
@@ -79,10 +80,12 @@ class ProfileService:
                 result = await strategy.fetch(self.client, ref)
             except ProfileNotFound as exc:
                 not_found_votes += 1
+                failures.append(exc)
                 errors[strategy.name] = exc.code
                 log.info("%s: profile not found for %s", strategy.name, ref.public_identifier)
                 continue
             except LinkedInAPIError as exc:
+                failures.append(exc)
                 errors[strategy.name] = exc.code
                 log.info("%s failed for %s: %s", strategy.name, ref.public_identifier, exc)
                 continue
@@ -103,6 +106,13 @@ class ProfileService:
                 raise ProfileNotFound(
                     f"No profile at /in/{ref.public_identifier}/.", detail=errors
                 )
+            # Do not bury a specific diagnosis under a generic one. If every
+            # strategy failed the same way, that way *is* the answer, and an
+            # operator needs it: a dead cookie and a bot check need different
+            # responses, and `all_strategies_failed` tells them neither.
+            distinct = {exc.code for exc in failures}
+            if len(distinct) == 1:
+                raise failures[0]
             raise AllStrategiesFailed(
                 "Every strategy failed. See detail for the reason from each.",
                 detail={"tried": tried, "errors": errors},

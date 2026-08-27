@@ -21,12 +21,20 @@ PYTHON = str(ROOT / ".venv" / "bin" / "python") if (ROOT / ".venv").exists() els
 MOCK_PORT = 9101
 API_PORT = 8099
 
-# mode -> the strategy that must answer, and the sections it must return.
+# mode -> what the service must do. None means the request must fail.
 EXPECTATIONS = {
-    "all": ("voyager_profile_view", {"experience": 2, "skills": 4}),
-    "no-legacy": ("voyager_dash", {"experience": 2, "skills": 2}),
-    "voyager-down": ("embedded_json", {"experience": 2, "skills": 2}),
-    "logged-out": ("public_jsonld", {"experience": 1, "skills": 0}),
+    # Everything healthy.
+    "all": ("voyager_dash", {"experience": 11, "skills": 20, "certifications": 12}),
+    # LinkedIn demands its routing cookie first. The client must complete the
+    # handshake and still return a full profile. This is the failure that broke
+    # the first live deployment.
+    "handshake": ("voyager_dash", {"experience": 11, "skills": 20, "certifications": 12}),
+    # Sections all fail. The top card must still come back, marked partial.
+    "thin": ("voyager_dash", {"experience": 0, "skills": 0, "certifications": 0}),
+    # A stale cookie must be named as such, not reported as a missing profile.
+    "dead": ("ERROR:linkedin_session_invalid", {}),
+    # A bot check must be named as such.
+    "challenge": ("ERROR:linkedin_challenge_required", {}),
 }
 
 
@@ -71,13 +79,31 @@ def run_mode(mode: str) -> bool:
             f"http://127.0.0.1:{API_PORT}/api/v1/profile"
             "?url=https%3A%2F%2Fwww.linkedin.com%2Fin%2Fadalovelace%2F&refresh=true"
         )
-        with urllib.request.urlopen(url, timeout=20) as response:
-            body = json.load(response)
-
         expected_strategy, expected_counts = EXPECTATIONS[mode]
-        profile, meta = body["profile"], body["meta"]
         problems = []
 
+        try:
+            with urllib.request.urlopen(url, timeout=30) as response:
+                body = json.load(response)
+            status = 200
+        except urllib.error.HTTPError as exc:
+            body = json.load(exc)
+            status = exc.code
+
+        if expected_strategy.startswith("ERROR:"):
+            wanted = expected_strategy.split(":", 1)[1]
+            got = body.get("error")
+            if got != wanted:
+                problems.append(f"error was {got!r}, wanted {wanted!r}")
+            print(
+                f"  {'FAIL' if problems else 'ok  '} {mode:<11} http={status} "
+                f"error={body.get('error')}"
+            )
+            for problem in problems:
+                print(f"       - {problem}")
+            return not problems
+
+        profile, meta = body["profile"], body["meta"]
         if meta["strategy"] != expected_strategy:
             problems.append(f"strategy was {meta['strategy']}, wanted {expected_strategy}")
         if profile["full_name"] != "Ada Lovelace":
@@ -88,9 +114,9 @@ def run_mode(mode: str) -> bool:
 
         mark = "FAIL" if problems else "ok  "
         print(
-            f"  {mark} {mode:<14} strategy={meta['strategy']:<22}"
-            f" complete={meta['completeness']:<5} experience={len(profile['experience'])}"
-            f" skills={len(profile['skills'])}"
+            f"  {mark} {mode:<11} strategy={meta['strategy']:<13}"
+            f" complete={meta['completeness']:<5} experience={len(profile['experience']):<3}"
+            f" skills={len(profile['skills']):<3} certs={len(profile['certifications'])}"
         )
         for problem in problems:
             print(f"       - {problem}")

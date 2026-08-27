@@ -13,7 +13,7 @@ from app.errors import (
     ProfileNotFound,
 )
 from app.linkedin.client import LinkedInClient
-from app.linkedin.normalize import from_profile_view
+from app.linkedin.normalize import from_entity_pool
 from app.linkedin.service import ProfileService
 from app.linkedin.strategies.base import Strategy, StrategyResult
 from app.models import Company, Experience, Profile, Skill
@@ -43,8 +43,9 @@ def build_service(settings, strategies):
 
 
 @pytest.fixture
-def rich(profile_view, ref):
-    return from_profile_view(profile_view, ref)
+def rich(full_pool, ref):
+    """A complete profile, built from the real captured payloads."""
+    return from_entity_pool(full_pool, ref)
 
 
 class TestFallback:
@@ -53,7 +54,7 @@ class TestFallback:
         second = FakeStrategy("second", profile=rich)
         service = build_service(settings, [first, second])
 
-        response = await service.get_profile("adalovelace")
+        response = await service.get_profile("ada-lovelace-000000000")
 
         assert response.meta.strategy == "first"
         assert second.calls == 0
@@ -65,7 +66,7 @@ class TestFallback:
         working = FakeStrategy("working", profile=rich)
         service = build_service(settings, [broken, working])
 
-        response = await service.get_profile("adalovelace")
+        response = await service.get_profile("ada-lovelace-000000000")
 
         assert response.meta.strategy == "working"
         assert response.meta.strategies_tried == ["broken", "working"]
@@ -82,7 +83,7 @@ class TestFallback:
             [FakeStrategy("a", profile=top_card), FakeStrategy("b", profile=sections)],
         )
 
-        response = await service.get_profile("adalovelace")
+        response = await service.get_profile("ada-lovelace-000000000")
 
         assert response.profile.full_name is None or response.profile.first_name == "Ada"
         assert response.profile.skills[0].name == "Rust"
@@ -93,11 +94,11 @@ class TestFallback:
         thin = Profile(first_name="Ada", skills=[Skill(name="Rust")])
         service = build_service(settings, [FakeStrategy("thin", profile=thin)])
 
-        response = await service.get_profile("adalovelace")
+        response = await service.get_profile("ada-lovelace-000000000")
 
         warning = " ".join(response.meta.warnings)
         assert "experience" in warning
-        assert "certifications" in warning
+        assert "education" in warning
 
     async def test_one_strategy_raising_an_unexpected_error_is_contained(
         self, settings, rich
@@ -106,7 +107,7 @@ class TestFallback:
         working = FakeStrategy("working", profile=rich)
         service = build_service(settings, [exploding, working])
 
-        response = await service.get_profile("adalovelace")
+        response = await service.get_profile("ada-lovelace-000000000")
         assert response.meta.strategy == "working"
 
     async def test_every_strategy_failing_raises_once(self, settings):
@@ -118,7 +119,7 @@ class TestFallback:
             ],
         )
         with pytest.raises(AllStrategiesFailed) as caught:
-            await service.get_profile("adalovelace")
+            await service.get_profile("ada-lovelace-000000000")
         assert caught.value.detail["errors"] == {
             "a": "linkedin_session_invalid",
             "b": "internal_error",
@@ -145,7 +146,7 @@ class TestFallback:
         private = FakeStrategy("private", profile=Profile(first_name="Ada"))
         service = build_service(settings, [private, public])
 
-        response = await service.get_profile("adalovelace")
+        response = await service.get_profile("ada-lovelace-000000000")
 
         assert private.calls == 0
         assert response.meta.strategy == "public"
@@ -164,8 +165,8 @@ class TestCaching:
         strategy = FakeStrategy("s", profile=rich)
         service = build_service(settings, [strategy])
 
-        first = await service.get_profile("adalovelace")
-        second = await service.get_profile("adalovelace")
+        first = await service.get_profile("ada-lovelace-000000000")
+        second = await service.get_profile("ada-lovelace-000000000")
 
         assert strategy.calls == 1
         assert first.meta.cached is False
@@ -176,8 +177,8 @@ class TestCaching:
         strategy = FakeStrategy("s", profile=rich)
         service = build_service(settings, [strategy])
 
-        await service.get_profile("adalovelace")
-        await service.get_profile("adalovelace", refresh=True)
+        await service.get_profile("ada-lovelace-000000000")
+        await service.get_profile("ada-lovelace-000000000", refresh=True)
 
         assert strategy.calls == 2
 
@@ -185,7 +186,9 @@ class TestCaching:
         strategy = FakeStrategy("s", profile=rich)
         service = build_service(settings, [strategy])
 
-        await service.get_profile("https://www.linkedin.com/in/adalovelace/")
-        await service.get_profile("https://in.linkedin.com/in/AdaLovelace?trk=x")
+        await service.get_profile("https://www.linkedin.com/in/ada-lovelace-000000000/")
+        await service.get_profile(
+            "https://in.linkedin.com/in/Ada-Lovelace-000000000?trk=x"
+        )
 
         assert strategy.calls == 1

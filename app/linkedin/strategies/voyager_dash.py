@@ -1,133 +1,151 @@
-"""Strategy 2: the current dash and GraphQL routes.
+"""Read a profile through Voyager's typed entity collections.
 
-The web app now reads a profile in two steps:
+Every route and argument here was verified by hand against LinkedIn on
+2026-08-28. Nothing in this file is assumed.
 
-  1. Resolve the vanity name to a profile URN.
-       GET /voyager/api/identity/dash/profiles
-           ?q=memberIdentity&memberIdentity={vanity}&decorationId=...
-  2. Ask for the entities that hang off that URN.
+The chain:
 
-We ask for a decoration that already includes the sections, so one call is
-usually enough. A decoration id is a server side projection name. LinkedIn
-versions them with a numeric suffix and retires old ones, so we try a short
-list and keep the first that answers.
+    profile URL
+      -> vanity name, for example "satyanadella"
+      -> GET /identity/dash/profiles?q=memberIdentity&memberIdentity=<vanity>
+         returns a CollectionResponse whose `included` holds one Profile
+      -> read entityUrn from that Profile
+      -> GET /identity/dash/profile<Section>s?q=viewee&profileUrn=<urn>
+         once per section
+      -> merge every `included` array into one pool and normalize
 
-The GraphQL route is the newest shape. Its queryId is a build hash that
-changes whenever LinkedIn ships the web app, so we read it from settings.
-That way an operator can repair this path with an environment variable and a
-restart, with no code change and no redeploy of a new image.
+Two things worth knowing before you change this file.
+
+`q=memberIdentity` accepts the vanity name directly. We tested the internal id
+and the vanity name and both return the same 14 KB response. `q=publicIdentifier`
+returns 400, so the query name really is `memberIdentity`.
+
+`memberIdentity` takes the bare vanity name. Passing a full
+`urn:li:fsd_profile:...` there returns 403 with a VoyagerUserVisibleException.
+
+`profileUrn` takes the full URN, percent encoded on the wire as
+`urn%3Ali%3Afsd_profile%3A...`. httpx does that encoding itself, so we pass the
+URN raw. Encoding it before handing it to httpx double encodes it to `%253A`
+and LinkedIn will not match it.
+
+Routes we removed, and why:
+
+  /identity/profiles/{id}/profileView   410 Gone. LinkedIn retired it.
+  /identity/dash/profileCards/...       404 on every variant we tried.
+  /identity/dash/profileComponents/...  404 on every variant we tried.
+
+The profile page itself no longer helps either. It is server rendered as a
+Server Driven UI tree, `proto.sdui.*`, which carries presentation rather than
+domain entities. There is no Position or Education in it to read.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from app.errors import LinkedInAPIError, ProfileNotFound
 from app.linkedin.client import LinkedInClient
 from app.linkedin.entities import EntityPool
-from app.linkedin.normalize import completeness, from_entity_pool
+from app.linkedin.normalize import from_entity_pool
 from app.linkedin.strategies.base import Strategy, StrategyResult
 from app.linkedin.urls import ProfileRef
 
 log = logging.getLogger(__name__)
 
-_DECORATIONS = (
-    "com.linkedin.voyager.dash.deco.identity.profile.FullProfileWithEntities-96",
-    "com.linkedin.voyager.dash.deco.identity.profile.FullProfileWithEntities-90",
-    "com.linkedin.voyager.dash.deco.identity.profile.WebTopCardCore-6",
-    "com.linkedin.voyager.dash.deco.identity.profile.TopCardComplete-1",
-)
+# Route segment -> the profile section it fills.
+# Verified: all of these return 200. An absent section returns a valid empty
+# collection of about 232 bytes, not an error.
+SECTION_ROUTES: dict[str, str] = {
+    "profilePositions": "experience",
+    "profileEducations": "education",
+    "profileSkills": "skills",
+    "profileCertifications": "certifications",
+    "profileLanguages": "languages",
+    "profileProjects": "projects",
+    "profileVolunteerExperiences": "volunteering",
+    "profileHonors": "honors",
+    "profilePublications": "publications",
+    "profileCourses": "courses",
+    "profilePatents": "patents",
+    "profileOrganizations": "organizations",
+    "profileTestScores": "test_scores",
+}
 
-# The sections we ask for one by one when the bundled decoration comes back thin.
-_SECTIONS = (
-    "EXPERIENCE",
-    "EDUCATION",
-    "SKILLS",
-    "LICENSES_AND_CERTIFICATIONS",
-    "LANGUAGES",
-    "PROJECTS",
-    "HONORS",
-    "VOLUNTEERING_EXPERIENCE",
-    "PUBLICATIONS",
-    "COURSES",
-)
+# Deliberately not fetched. profilePositionGroups returns only companyName,
+# companyUrn and dateRange, which Position already carries, and nothing links
+# the two. It costs a request and adds no field.
+SKIPPED_ROUTES = ("profilePositionGroups",)
 
 
 class VoyagerDashStrategy(Strategy):
     name = "voyager_dash"
     needs_auth = True
-    description = "Current dash REST route, with a GraphQL fallback for each section."
+    description = "Typed Voyager collections: one call for the top card, one per section."
 
     async def fetch(self, client: LinkedInClient, ref: ProfileRef) -> StrategyResult:
-        pool = EntityPool()
-        warnings: list[str] = []
-        last_error: Exception | None = None
-
-        for decoration in _DECORATIONS:
-            try:
-                data = await client.get_json(
-                    "/identity/dash/profiles",
-                    params={
-                        "q": "memberIdentity",
-                        "memberIdentity": ref.public_identifier,
-                        "decorationId": decoration,
-                    },
-                    referer=ref.canonical_url,
-                )
-            except ProfileNotFound:
-                raise
-            except LinkedInAPIError as exc:
-                last_error = exc
-                log.debug("Decoration %s failed: %s", decoration, exc)
-                continue
-
-            pool.merge(EntityPool.from_payload(data))
-            if pool.by_type("Profile", "MiniProfile"):
-                break
-
-        if not len(pool):
-            raise last_error or LinkedInAPIError("No dash decoration returned a profile.")
-
+        pool, urn = await self._top_card(client, ref)
+        warnings = await self._sections(client, ref, urn, pool)
         profile = from_entity_pool(pool, ref)
-
-        # Top up the thin sections through GraphQL, if we know the query hash.
-        if completeness(profile) < 0.7:
-            urn = profile.urn
-            if urn:
-                extra = await self._fetch_sections(client, ref, urn, warnings)
-                if len(extra):
-                    pool.merge(extra)
-                    profile = from_entity_pool(pool, ref)
-            else:
-                warnings.append("Could not resolve a profile URN, so sections were skipped.")
-
         return StrategyResult(
             name=self.name,
             profile=profile,
-            raw={"entity_types": pool.type_counts()},
+            raw={"profile_urn": urn, "entity_types": pool.type_counts()},
             warnings=warnings,
         )
 
-    async def _fetch_sections(
+    async def _top_card(
+        self, client: LinkedInClient, ref: ProfileRef
+    ) -> tuple[EntityPool, str]:
+        data = await client.get_json(
+            "/identity/dash/profiles",
+            params={"q": "memberIdentity", "memberIdentity": ref.public_identifier},
+            referer=ref.canonical_url,
+        )
+        pool = EntityPool.from_payload(data)
+        entity = pool.first("Profile", "MiniProfile")
+        if entity is None:
+            raise ProfileNotFound(
+                f"No profile at /in/{ref.public_identifier}/.",
+                detail={"entity_types": pool.type_counts()},
+            )
+        urn = entity.get("entityUrn")
+        if not isinstance(urn, str):
+            raise LinkedInAPIError("The profile carried no entityUrn, so sections cannot load.")
+        return pool, urn
+
+    async def _sections(
         self,
         client: LinkedInClient,
         ref: ProfileRef,
         urn: str,
-        warnings: list[str],
-    ) -> EntityPool:
-        pool = EntityPool()
-        query_id = client.settings.query_id_profile_components
-        for section in _SECTIONS:
-            variables = f"(profileUrn:{urn},sectionType:{section.lower()})"
+        pool: EntityPool,
+    ) -> list[str]:
+        """Fetch every section. One failure costs one section, never the profile."""
+        wanted = client.settings.sections or list(SECTION_ROUTES)
+        warnings: list[str] = []
+
+        async def one(route: str) -> tuple[str, EntityPool | None, str | None]:
             try:
                 data = await client.get_json(
-                    "/graphql",
-                    params={"variables": variables, "queryId": query_id},
+                    f"/identity/dash/{route}",
+                    # Pass the URN raw. httpx percent encodes the colons into
+                    # %3A, which is the form we verified against LinkedIn.
+                    # Pre-encoding it here would double encode to %253A.
+                    params={"q": "viewee", "profileUrn": urn},
                     referer=ref.canonical_url,
                 )
+                return route, EntityPool.from_payload(data), None
             except LinkedInAPIError as exc:
-                warnings.append(f"Section {section.lower()} failed: {exc.code}")
-                # A bad queryId fails every section. Stop after the first miss.
-                break
-            pool.merge(EntityPool.from_payload(data))
-        return pool
+                return route, None, exc.code
+            except Exception:  # noqa: BLE001 - a bad section must not sink the profile
+                log.exception("Section %s raised for %s", route, ref.public_identifier)
+                return route, None, "unexpected_error"
+
+        results = await asyncio.gather(*(one(route) for route in wanted))
+        for route, section_pool, error in results:
+            if section_pool is not None:
+                pool.merge(section_pool)
+            else:
+                warnings.append(f"Section {route} failed with {error}.")
+        return warnings

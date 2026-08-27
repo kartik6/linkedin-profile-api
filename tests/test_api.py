@@ -9,9 +9,10 @@ from fastapi.testclient import TestClient
 
 from app import main
 from app.errors import AuthenticationFailed, ProfileNotFound
-from app.linkedin.normalize import from_profile_view
+from app.linkedin.normalize import from_entity_pool
 from app.linkedin.service import ProfileService
 from app.models import Meta, ProfileResponse
+from tests.conftest import PUBLIC_ID
 
 
 class StubService(ProfileService):
@@ -42,8 +43,9 @@ class StubService(ProfileService):
 
 
 @pytest.fixture
-def rich(profile_view, ref):
-    return from_profile_view(profile_view, ref)
+def rich(full_pool, ref):
+    """A complete profile, built from the real captured payloads."""
+    return from_entity_pool(full_pool, ref)
 
 
 @pytest.fixture
@@ -70,34 +72,35 @@ class TestOps:
 
     def test_strategies_are_listed(self, client):
         body = client.get("/api/v1/strategies").json()
-        assert body["order"]
-        assert body["available"]["embedded_json"]["needs_auth"] is True
-        assert body["available"]["public_jsonld"]["needs_auth"] is False
+        assert body["order"] == ["voyager_dash"]
+        assert body["available"]["voyager_dash"]["needs_auth"] is True
 
     def test_parse_validates_without_a_network_call(self, client):
-        body = client.get("/api/v1/parse", params={"url": "linkedin.com/in/adalovelace"}).json()
-        assert body["public_identifier"] == "adalovelace"
-        assert body["canonical_url"] == "https://www.linkedin.com/in/adalovelace/"
+        body = client.get(
+            "/api/v1/parse", params={"url": "linkedin.com/in/ada-lovelace-000000000"}
+        ).json()
+        assert body["public_identifier"] == "ada-lovelace-000000000"
+        assert body["canonical_url"] == "https://www.linkedin.com/in/ada-lovelace-000000000/"
 
 
 class TestGetProfile:
     def test_returns_the_profile(self, client):
         response = client.get(
-            "/api/v1/profile", params={"url": "https://www.linkedin.com/in/adalovelace/"}
+            "/api/v1/profile", params={"url": "https://www.linkedin.com/in/ada-lovelace-000000000/"}
         )
         assert response.status_code == 200
         body = response.json()
         assert body["profile"]["full_name"] == "Ada Lovelace"
-        assert body["profile"]["experience"][0]["title"] == "Principal Engineer"
+        assert body["profile"]["experience"][0]["title"].startswith("Principal Engineer")
         assert body["meta"]["strategy"] == "stub"
         assert body["meta"]["completeness"] == 1.0
 
     def test_post_accepts_the_url_in_the_body(self, client):
         response = client.post(
-            "/api/v1/profile", json={"url": "adalovelace", "refresh": True}
+            "/api/v1/profile", json={"url": "ada-lovelace-000000000", "refresh": True}
         )
         assert response.status_code == 200
-        assert main.state["service"].calls[-1] == ("adalovelace", True)
+        assert main.state["service"].calls[-1] == ("ada-lovelace-000000000", True)
 
     def test_a_missing_url_is_a_422(self, client):
         assert client.get("/api/v1/profile").status_code == 422
@@ -119,7 +122,7 @@ class TestGetProfile:
     def test_a_dead_cookie_is_a_503(self, rich):
         with TestClient(main.app) as tc:
             main.state["service"] = StubService(error=AuthenticationFailed())
-            response = tc.get("/api/v1/profile", params={"url": "adalovelace"})
+            response = tc.get("/api/v1/profile", params={"url": "ada-lovelace-000000000"})
         assert response.status_code == 503
         assert response.json()["error"] == "linkedin_session_invalid"
 
@@ -127,7 +130,8 @@ class TestGetProfile:
 class TestBatch:
     def test_reads_several_profiles(self, client):
         response = client.post(
-            "/api/v1/profiles/batch", json={"urls": ["adalovelace", "adalovelace"]}
+            "/api/v1/profiles/batch",
+            json={"urls": [PUBLIC_ID, PUBLIC_ID]},
         )
         body = response.json()
         assert body["requested"] == 2
@@ -137,7 +141,7 @@ class TestBatch:
     def test_one_failure_does_not_sink_the_batch(self, client):
         response = client.post(
             "/api/v1/profiles/batch",
-            json={"urls": ["adalovelace", "https://www.linkedin.com/company/x/"]},
+            json={"urls": ["ada-lovelace-000000000", "https://www.linkedin.com/company/x/"]},
         )
         body = response.json()
         assert body["succeeded"] == 1
@@ -146,14 +150,15 @@ class TestBatch:
 
     def test_the_batch_is_capped(self, client):
         response = client.post(
-            "/api/v1/profiles/batch", json={"urls": ["adalovelace"] * 25}
+            "/api/v1/profiles/batch", json={"urls": ["ada-lovelace-000000000"] * 25}
         )
         assert response.json()["requested"] == 10
 
 
 class TestAuth:
     def test_open_when_no_keys_are_set(self, client):
-        assert client.get("/api/v1/profile", params={"url": "adalovelace"}).status_code == 200
+        response = client.get("/api/v1/profile", params={"url": PUBLIC_ID})
+        assert response.status_code == 200
 
     def test_a_key_is_required_once_configured(self, monkeypatch, rich):
         from app.config import get_settings
@@ -163,16 +168,17 @@ class TestAuth:
         try:
             with TestClient(main.app) as tc:
                 main.state["service"] = StubService(profile=rich)
-                assert tc.get("/api/v1/profile", params={"url": "adalovelace"}).status_code == 401
+                denied = tc.get("/api/v1/profile", params={"url": PUBLIC_ID})
+                assert denied.status_code == 401
                 ok = tc.get(
                     "/api/v1/profile",
-                    params={"url": "adalovelace"},
+                    params={"url": "ada-lovelace-000000000"},
                     headers={"X-API-Key": "secret-two"},
                 )
                 assert ok.status_code == 200
                 bad = tc.get(
                     "/api/v1/profile",
-                    params={"url": "adalovelace"},
+                    params={"url": "ada-lovelace-000000000"},
                     headers={"X-API-Key": "wrong"},
                 )
                 assert bad.status_code == 401
@@ -191,7 +197,7 @@ class TestRateLimit:
         try:
             with TestClient(main.app) as tc:
                 main.state["service"] = StubService(profile=rich)
-                params = {"url": "adalovelace"}
+                params = {"url": "ada-lovelace-000000000"}
                 assert tc.get("/api/v1/profile", params=params).status_code == 200
                 assert tc.get("/api/v1/profile", params=params).status_code == 200
                 third = tc.get("/api/v1/profile", params=params)

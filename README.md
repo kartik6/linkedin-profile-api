@@ -7,15 +7,15 @@ curl "https://linkedin-profile-api.fly.dev/api/v1/profile?url=https://www.linked
 ```
 
 **Live API:** https://linkedin-profile-api.fly.dev
-**Docs:** https://linkedin-profile-api.fly.dev/docs — interactive OpenAPI reference.
+**Docs:** https://linkedin-profile-api.fly.dev/docs
 **Source:** https://github.com/kartik6/linkedin-profile-api
 
 ---
 
 ## Contents
 
-1. [What it returns](#what-it-returns)
-2. [Approach](#approach)
+1. [Approach](#approach) — how the API was found
+2. [What it returns](#what-it-returns)
 3. [API reference](#api-reference)
 4. [Setup](#setup)
 5. [Deploy](#deploy)
@@ -26,83 +26,226 @@ curl "https://linkedin-profile-api.fly.dev/api/v1/profile?url=https://www.linked
 
 ---
 
-## What it returns
+## Approach
 
-The response holds two objects. `profile` holds the data. `meta` tells you where
-the data came from and how complete it is.
+Every route, argument and field name below was verified by hand against
+LinkedIn on **28 August 2026**. Where something could not be verified, this
+document says so.
+
+### The method
+
+LinkedIn's private API is undocumented, so there is one source of truth: a
+client that already works. The browser is that client. The whole exercise is to
+watch a conversation that succeeds, then reproduce it.
+
+### 1. First, prove the account can see the data
+
+Before debugging any code, the target profile was opened in a browser logged in
+as the same account the service uses. It rendered fully.
+
+That single check separates two problems that look identical from the outside:
+a request we built wrong, and an account that is not allowed to see the data. It
+cost thirty seconds and made every later result meaningful.
+
+### 2. The profile page does not use an API
+
+The obvious assumption is that the page fetches its data over XHR. It does not.
+
+A DevTools search across every response body, for a string visible on the
+profile, matched exactly one file: **the HTML document**. No GraphQL call
+carried it.
+
+The page is server rendered, and what it embeds is not domain data:
+
+```html
+<script id="rehydrate-data">window.__como_rehydration__ = [ "1:I[...]\n2:I[...]" ]</script>
+```
+
+That is a React Server Components flight stream — 161 strings which join into
+375 chunks. Counting every `$type` inside it gives 2221 values, and **not one is
+a domain entity**:
+
+| Namespace | Count | Describes |
+|---|---|---|
+| `proto.sdui.actions` | 869 | what happens on click |
+| `proto.sdui.expressions` | 533 | conditional logic |
+| `proto.sdui.triggers` | 288 | hover, click, visibility |
+| `proto.sdui.bindings` | 163 | state wiring |
+| `proto.sdui.components` | 61 | text style, colour |
+
+`SDUI` is Server Driven UI. The server sends a description of the interface, not
+the data behind it. LinkedIn's server has already flattened *"this person works
+at Acme"* into *"draw a text node reading Acme here"*. The app calls itself
+`flagship-web`, not `voyager-web`.
+
+**So parsing the profile page is a dead end.** There is no `Position` or
+`Education` in it to read.
+
+### 3. But Voyager is still alive underneath
+
+The page's navigation bar still calls the old API to fetch the logged-in user's
+own avatar. Replaying that call with a *different* member's ID returned that
+member's URN — so the route serves any member, not just yourself.
+
+The response was only 1334 bytes, holding two fields. That is not a
+restriction; it is a **projection**. In Voyager's GraphQL the `queryId` *is* the
+query — a hash identifying a stored server-side query that fixes which fields
+come back. That particular one is a cache check.
+
+It also shipped a `microSchema` describing what it had just returned:
+
+```json
+"baseType": "com.linkedin.voyager.dash.identity.profile.Profile"
+```
+
+The domain model still exists. It just needs a route that asks for the fields.
+
+### 4. Probing for routes that do
+
+Candidate routes were fired in batches and read by status code. The failures
+were as informative as the successes:
+
+| Route | Status | Meaning |
+|---|---|---|
+| `/identity/profiles/{id}/profileView` | **410 Gone** | Deliberately retired. 410, not 404 — LinkedIn is saying "this existed, stop asking". |
+| `/identity/dash/profileCards/...` | 404 | No such route. Card URNs are for the SDUI layer only. |
+| `/identity/dash/profiles?q=publicIdentifier` | 400 | Route exists, query name wrong. |
+| `/identity/dash/profiles?q=memberIdentity` **with a full URN** | 403 | Route exists, argument format wrong. |
+| `/identity/dash/profiles?q=memberIdentity` **with a bare id or vanity** | **200** | Works. |
+| `/identity/dash/profilePositions?q=viewee&profileUrn=` | **200** | Works. |
+
+Once `profilePositions`, `profileEducations` and `profileSkills` worked, the
+pattern was clear enough to predict from:
+
+```
+/voyager/api/identity/dash/profile{Entity}s?q=viewee&profileUrn={urn}
+```
+
+Eleven more section names were predicted from that shape. **Ten of eleven
+existed.** `viewee` is LinkedIn's own word for "the person being viewed".
+
+### 5. Reading responses by size
+
+Eight sections returned exactly 232 bytes. That is not an error — it is the
+empty-collection baseline. A valid 200 with zero elements, because the test
+subject genuinely has no patents or publications.
+
+| Bytes | Meaning |
+|---|---|
+| 14 | `{"status":404}` — no such route |
+| 232 | works; the person has nothing in this section |
+| 2000+ | real data |
+
+Knowing that constant lets you read a whole probe sweep without opening a body.
+
+### 6. The verified chain
+
+```
+profile URL
+  → vanity name                                    urls.py
+  → GET /identity/dash/profiles
+        ?q=memberIdentity&memberIdentity={vanity}   one call, returns the top card
+  → read entityUrn from the Profile in `included`
+  → GET /identity/dash/profile{Section}s
+        ?q=viewee&profileUrn={urn}                  one call per section
+  → merge every `included` array into one pool
+  → normalize into our schema
+```
+
+Authentication is two cookies plus a header. `li_at` is the session. The
+`csrf-token` header must carry the `JSESSIONID` cookie value with its quotes
+stripped — `evil.com` can make your browser send cookies but cannot read them,
+so copying the value into a header proves the request came from real LinkedIn
+JavaScript.
+
+### 7. The bug that only production revealed
+
+The first deployment failed on every request. Our own error code said
+`profile_not_found`, which was wrong and self-inflicted.
+
+The real response was `302`, redirecting to **the same URL it had asked for**.
+That is LinkedIn's routing-cookie handshake: it answers with `Set-Cookie:
+lidc=...` and expects a retry. A browser does that automatically. Our client
+sent a fixed cookie dictionary on every request and followed no redirects, so it
+never stored `lidc` and was bounced forever.
+
+Each session now owns its own `httpx` client, and therefore its own cookie jar.
+`tests/test_strategies.py::TestRoutingCookieHandshake` encodes the failure, and
+`scripts/e2e.py --mode handshake` reproduces it end to end.
+
+### 8. What the responses do not contain
+
+Counting fields across *all* eleven captured positions, not one sample:
+
+```
+11/11  title           10/11  companyName      5/11  locationName
+11/11  dateRange        9/11  companyUrn       0/11  description
+```
+
+`description` appears on **zero**. `profilePositions` does not return role
+descriptions at all. That is a capability limit, documented below, not a bug.
+
+Sampling one position would have been misleading in the other direction too:
+the first one examined happened to be the one *without* `companyName`, which
+almost led to a wrong conclusion about where company data lives.
+
+### 9. Why only one strategy
+
+An earlier version of this service had four fetch strategies. Three were removed
+after testing proved them dead — 410 Gone, or looking for a payload format the
+page no longer ships. They are documented in
+`app/linkedin/strategies/__init__.py` with the evidence for each removal.
+
+One strategy that works is worth more than four that might.
+
+---
+
+## What it returns
 
 ```jsonc
 {
   "profile": {
-    "public_identifier": "adalovelace",
-    "urn": "urn:li:fsd_profile:ACoAAAB1234",
-    "profile_url": "https://www.linkedin.com/in/adalovelace/",
-    "first_name": "Ada",
-    "last_name": "Lovelace",
-    "full_name": "Ada Lovelace",
-    "headline": "Principal Engineer at Analytical Engines",
+    "public_identifier": "some-person-123456",
+    "urn": "urn:li:fsd_profile:ACoAA...",
+    "first_name": "Ada", "last_name": "Lovelace", "full_name": "Ada Lovelace",
+    "headline": "Principal Engineer | Distributed Systems",
     "about": "I build systems that stay up.",
-    "industry": "Software Development",
-    "location": {
-      "full": "Bengaluru, Karnataka, India",
-      "city": "Bengaluru",
-      "country": "India",
-      "country_code": "IN"
-    },
+    "pronouns": "he/him",
+    "location": { "country_code": "IN", "full": null },
     "profile_picture": {
-      "url": "https://media.licdn.com/.../800_800/0/16?e=1767225600&v=beta&t=cc",
+      "url": "https://media.licdn.com/dms/image/v2/.../800_800/...",
       "artifacts": [
-        { "width": 100, "height": 100, "url": "https://media.licdn.com/..." },
-        { "width": 400, "height": 400, "url": "https://media.licdn.com/..." },
-        { "width": 800, "height": 800, "url": "https://media.licdn.com/..." }
+        { "width": 100, "height": 100, "url": "..." },
+        { "width": 800, "height": 800, "url": "..." }
       ],
-      "expires_at": "2026-01-01T00:00:00Z"
+      "expires_at": "2026-09-17T00:00:00Z"
     },
     "background_picture": { "url": "..." },
-    "follower_count": 18422,
-    "connection_count": 500,
-    "open_to_work": false,
-    "is_premium": true,
 
-    "experience": [
-      {
-        "title": "Principal Engineer",
-        "company": {
-          "name": "Analytical Engines",
-          "urn": "urn:li:fsd_company:9001",
-          "linkedin_url": "https://www.linkedin.com/company/analytical-engines/",
-          "logo": { "url": "https://media.licdn.com/..." },
-          "industry": "Software Development",
-          "staff_count": 2400
-        },
-        "employment_type": "FULL_TIME",
-        "workplace_type": "HYBRID",
-        "location": "Bengaluru, India",
-        "description": "Own the storage layer.",
-        "date_range": {
-          "start": { "year": 2021, "month": 5, "text": "May 2021" },
-          "end": null,
-          "is_current": true,
-          "duration_months": 64,
-          "text": "May 2021 - Present"
-        },
-        "skills": ["Rust", "Distributed Systems"]
+    "experience": [{
+      "title": "Principal Engineer",
+      "company": { "name": "Acme", "urn": "urn:li:fsd_company:9001",
+                   "linkedin_url": "https://www.linkedin.com/company/9001/" },
+      "location": "Bengaluru, Karnataka, India",
+      "description": null,
+      "date_range": {
+        "start": { "year": 2023, "month": 2, "text": "February 2023" },
+        "end": null, "is_current": true,
+        "duration_months": 43, "text": "February 2023 - Present"
       }
-    ],
-    "education":      [{ "school": {...}, "degree": "...", "field_of_study": "...", "grade": "...", "date_range": {...} }],
-    "skills":         [{ "name": "Rust", "endorsement_count": 17 }],
-    "certifications": [{ "name": "...", "authority": "...", "license_number": "...", "url": "...", "issued_on": {...}, "expires_on": {...} }],
-    "languages":      [{ "name": "English", "proficiency": "Native Or Bilingual" }],
-    "projects":       [], "publications": [], "honors": [], "volunteering": [],
-    "courses":        [], "patents": [], "organizations": [], "test_scores": []
+    }],
+    "education":      [{ "school": {...}, "degree": "...", "field_of_study": "...", "grade": "..." }],
+    "skills":         [{ "name": "Rust" }],
+    "certifications": [{ "name": "...", "authority": "...", "license_number": "...", "issued_on": {...} }],
+    "languages": [], "projects": [], "honors": [], "volunteering": [],
+    "publications": [], "courses": [], "patents": [], "organizations": [], "test_scores": []
   },
 
   "meta": {
-    "strategy": "voyager_profile_view",
-    "strategies_tried": ["voyager_profile_view"],
+    "strategy": "voyager_dash",
     "cached": false,
-    "fetched_at": "2026-08-27T10:30:00Z",
-    "duration_ms": 842,
+    "fetched_at": "2026-08-28T10:30:00Z",
+    "duration_ms": 3120,
     "completeness": 1.0,
     "partial": false,
     "warnings": []
@@ -110,169 +253,13 @@ the data came from and how complete it is.
 }
 ```
 
-Every field is optional. LinkedIn shows different data to different viewers, so
-a field that is absent is normal, not an error. Read `meta.completeness` and
-`meta.warnings` to see what is missing and why.
+Every field is optional. An empty section usually means the person has nothing
+there — LinkedIn returns a valid empty collection, not an error. Read
+`meta.warnings` to tell that apart from a section call that failed.
 
----
-
-## Approach
-
-### 1. Find the real API
-
-LinkedIn's web app is a single page app. It does not render the profile on the
-server for the browser to read. It calls a private JSON API and renders the
-result. That API is **Voyager**, at `www.linkedin.com/voyager/api/`.
-
-I opened a profile with the browser network panel filtered to XHR, and read the
-requests the page made. Three facts came out of that:
-
-**Authentication is two cookies, not a token.**
-
-| Item | Value | Purpose |
-|---|---|---|
-| `li_at` cookie | opaque session string | identifies the member |
-| `JSESSIONID` cookie | `"ajax:1234567890123456789"` | CSRF pair, quoted |
-| `csrf-token` header | `ajax:1234567890123456789` | same value, quotes removed |
-
-The header and the cookie must match. A request with one and not the other gets
-a `401`. Voyager also wants `x-restli-protocol-version: 2.0.0`, because it
-speaks [Rest.li](https://linkedin.github.io/rest.li/), LinkedIn's own REST
-dialect.
-
-**One header changes the response shape.** Send
-`Accept: application/vnd.linkedin.normalized+json+2.1` and Voyager answers with
-a flat entity graph instead of a deep tree:
-
-```jsonc
-{
-  "data":     { "*elements": ["urn:li:fsd_profile:ACoAA..."] },
-  "included": [
-    { "$type": "...profile.Profile",  "entityUrn": "urn:li:fsd_profile:ACoAA...", "firstName": "Ada" },
-    { "$type": "...profile.Position", "entityUrn": "urn:...", "title": "Engineer", "*company": "urn:li:fsd_company:9001" },
-    { "$type": "...organization.Company", "entityUrn": "urn:li:fsd_company:9001", "name": "Acme" }
-  ]
-}
-```
-
-Each entity carries a type and an ID. A field whose name starts with `*` holds
-a URN that points at another entity in the same list. This is a normalized
-graph, so I index it once and resolve references by lookup.
-
-**The same graph appears in three places.** The REST route returns it. The
-GraphQL route returns it. And the server rendered HTML page **inlines it** in
-hidden elements:
-
-```html
-<code style="display:none" id="bpr-guid-3921884">{"data":{...},"included":[...]}</code>
-```
-
-That last one matters more than it looks. It means I can read a full profile
-from the HTML page with no knowledge of any API route at all.
-
-### 2. Build four ways in, not one
-
-A single scraper against a private API is one deploy away from dead. So the
-service holds four strategies and walks them in order. The first that returns
-enough data wins.
-
-| # | Strategy | Route | Cost | Breaks when |
-|---|---|---|---|---|
-| 1 | `voyager_profile_view` | `GET /identity/profiles/{id}/profileView` | 1 call | LinkedIn retires the legacy route for the account |
-| 2 | `voyager_dash` | `GET /identity/dash/profiles` + GraphQL per section | 1 to 11 calls | a decoration ID or a GraphQL query hash rotates |
-| 3 | `embedded_json` | `GET /in/{id}/` then parse inlined JSON | 1 call, larger | LinkedIn stops server rendering the page |
-| 4 | `public_jsonld` | `GET /in/{id}/` with **no cookie**, parse schema.org | 1 call | the profile is not public |
-
-Strategy 1 is first because one call returns every section. Strategy 3 is the
-durable one: it depends on no route name, no decoration ID and no query hash,
-only on the public profile URL. Strategy 4 needs no login at all, so the API
-still answers something when every cookie is dead.
-
-**The important design choice:** all four feed **one** normalizer. Strategies 2,
-3 and 4 differ only in how they obtain the entity graph, not in how they read
-it. Adding a fifth way in means writing a fetch, not a parser.
-
-```
-URL ─→ parse ─→ [ strategy 1 ] ─┐
-                [ strategy 2 ] ─┤
-                [ strategy 3 ] ─┼─→ EntityPool ─→ normalize ─→ Profile ─→ JSON
-                [ strategy 4 ] ─┘
-```
-
-### 3. Survive LinkedIn's renaming
-
-LinkedIn ships two namespaces at the same time for the same idea:
-
-```
-com.linkedin.voyager.identity.profile.Position          # older
-com.linkedin.voyager.dash.identity.profile.Position     # newer
-```
-
-So the index matches on the **last segment** of the type, not the full name.
-`Position` matches both. This one decision made the parser work against payload
-shapes I had not seen when I wrote it.
-
-Every field read tries several key names, because LinkedIn moves fields between
-releases. Text arrives in at least four wrappers, so one helper reads all of
-them:
-
-```python
-"Engineer"                                # plain
-{"text": "Engineer"}                      # TextViewModel
-{"text": {"text": "Engineer"}}            # nested
-{"en_US": "Engineer", "de_DE": "..."}     # locale map
-```
-
-### 4. Rebuild the images
-
-LinkedIn never sends an image URL. It sends a root and one path segment per
-size:
-
-```jsonc
-{
-  "rootUrl": "https://media.licdn.com/dms/image/v2/D5603AQ.../profile-displayphoto-shrink_",
-  "artifacts": [
-    { "width": 100, "height": 100, "fileIdentifyingUrlPathSegment": "100_100/0/16?e=1767225600&v=beta&t=aa" },
-    { "width": 800, "height": 800, "fileIdentifyingUrlPathSegment": "800_800/0/16?e=1767225600&v=beta&t=cc" }
-  ]
-}
-```
-
-A usable URL is `rootUrl + fileIdentifyingUrlPathSegment`. The API returns every
-size, and picks the largest as the default. The `e=` parameter is a unix
-expiry, so the API also returns `expires_at`. **These URLs stop working after a
-few hours.** Download the bytes if you need them to last.
-
-### 5. Never fail on a section
-
-A profile has fifteen sections. One of them changing shape must not cost the
-other fourteen. Each section parses inside its own guard, and a failure yields
-an empty list plus a warning. The response then reports the damage:
-
-```json
-"meta": {
-  "completeness": 0.75,
-  "partial": true,
-  "warnings": ["These sections came back empty: skills, certifications."]
-}
-```
-
-A partial profile with a warning serves the caller better than a `500`.
-
-### 6. Protect the account
-
-The LinkedIn account is the scarce resource here, not CPU. So:
-
-- **One shared token bucket** paces every outbound call, at `0.4` per second by
-  default. Concurrent callers queue behind it.
-- **Jitter** breaks up an even request rhythm.
-- **A cache** with a one hour time to live. A cache hit costs LinkedIn nothing.
-- **A session pool.** Give the service several cookies and it rotates them. A
-  cookie that fails goes into quarantine for fifteen minutes, and the rest
-  carry on.
-- **Named failures.** A dead cookie returns `linkedin_session_invalid`. A bot
-  check returns `linkedin_challenge_required`. An operator then knows whether
-  to replace a cookie or to wait.
+`completeness` scores coverage against `experience`, `education` and `skills`
+plus the core scalar fields. Languages, patents and the rest are deliberately
+not scored, because most real profiles have none.
 
 ---
 
@@ -284,10 +271,10 @@ Base URL: `https://linkedin-profile-api.fly.dev`
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `url` | string | yes | A profile URL, or a bare public identifier. |
-| `refresh` | bool | no | Skip the cache and refetch. Default `false`. |
+| `url` | string | yes | A profile URL, or a bare public identifier |
+| `refresh` | bool | no | Skip the cache and refetch |
 
-These inputs all resolve to the same profile:
+These all resolve to the same profile:
 
 ```
 https://www.linkedin.com/in/satyanadella/
@@ -297,58 +284,40 @@ satyanadella
 urn:li:fsd_profile:ACoAAA1234
 ```
 
-```bash
-curl "$BASE/api/v1/profile?url=https://www.linkedin.com/in/satyanadella/"
-```
-
 ### `POST /api/v1/profile`
 
 ```bash
-curl -X POST "$BASE/api/v1/profile" \
-  -H 'content-type: application/json' \
+curl -X POST "$BASE/api/v1/profile" -H 'content-type: application/json' \
   -d '{"url": "https://www.linkedin.com/in/satyanadella/", "refresh": false}'
 ```
 
 ### `POST /api/v1/profiles/batch`
 
-Reads up to 10 profiles, 3 at a time. One failure does not sink the batch.
-
-```bash
-curl -X POST "$BASE/api/v1/profiles/batch" \
-  -H 'content-type: application/json' \
-  -d '{"urls": ["satyanadella", "williamhgates"]}'
-```
-
-```json
-{ "results": [ { "url": "satyanadella", "ok": true, "profile": {...}, "meta": {...} } ],
-  "requested": 2, "succeeded": 2, "failed": 0 }
-```
+Up to 10 profiles, 3 at a time. One failure does not sink the batch.
 
 ### Operations endpoints
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /health` | Liveness. No authentication. |
-| `GET /api/v1/session` | Ask LinkedIn if our cookie still works. |
-| `GET /api/v1/strategies` | List the strategies and their order. |
-| `GET /api/v1/parse?url=` | Validate a URL. Makes no LinkedIn call. |
-| `GET /api/v1/cache` | Hit rate and entry count. |
-| `DELETE /api/v1/cache/{id}` | Drop one cached profile. |
-| `GET /docs` | Interactive OpenAPI reference. |
+| `GET /health` | Liveness. No auth. |
+| `GET /api/v1/session` | Is the LinkedIn cookie still valid |
+| `GET /api/v1/diagnose?url=` | Raw status, landing URL and body head for each route |
+| `GET /api/v1/strategies` | List the fetch strategies |
+| `GET /api/v1/parse?url=` | Validate a URL, no LinkedIn call |
+| `GET /api/v1/cache` | Hit rate and entry count |
+| `DELETE /api/v1/cache/{id}` | Drop one cached profile |
+| `GET /docs` | Interactive OpenAPI reference |
+
+`/api/v1/diagnose` exists because our own error codes say what *we* did about a
+failure, not what LinkedIn said. It reports the raw upstream answer. It is what
+found the `302` handshake.
 
 ### Authentication
 
-Set `API_KEYS` and every call needs a header:
-
-```bash
-curl -H "X-API-Key: your-key" "$BASE/api/v1/profile?url=satyanadella"
-```
-
-Leave `API_KEYS` empty and the API stays open. That suits a demo.
+Set `API_KEYS` and every call needs `X-API-Key`. Leave it empty and the API is
+open, which suits a demo.
 
 ### Errors
-
-Every error returns the same body.
 
 ```json
 { "error": "linkedin_session_invalid",
@@ -356,319 +325,224 @@ Every error returns the same body.
   "detail": null }
 ```
 
-| HTTP | `error` | Meaning | What to do |
-|---|---|---|---|
-| 400 | `invalid_profile_url` | Not a member profile URL. | Check the URL. |
-| 401 | `unauthorized` | Missing or wrong API key. | Send `X-API-Key`. |
-| 404 | `profile_not_found` | No profile at that identifier. | Check the identifier. |
-| 429 | `rate_limited` | Our own caller limit. | Wait for `Retry-After`. |
-| 429 | `linkedin_rate_limited` | LinkedIn throttled us. | Wait. Lower `OUTBOUND_RPS`. |
-| 502 | `all_strategies_failed` | Every strategy failed. `detail` names each reason. | Check `/api/v1/session`. |
-| 503 | `linkedin_session_invalid` | The cookie is dead. | Replace `LI_AT`. |
-| 503 | `linkedin_challenge_required` | LinkedIn wants a human. | Log in through a browser and clear the check. |
-| 503 | `no_linkedin_session` | No cookie is set. | Set `LI_AT`. |
+| HTTP | `error` | What to do |
+|---|---|---|
+| 400 | `invalid_profile_url` | Check the URL |
+| 401 | `unauthorized` | Send `X-API-Key` |
+| 404 | `profile_not_found` | Check the identifier |
+| 429 | `rate_limited` | Wait for `Retry-After` |
+| 429 | `linkedin_rate_limited` | Wait. Lower `OUTBOUND_RPS` |
+| 502 | `all_strategies_failed` | Check `/api/v1/diagnose` |
+| 503 | `linkedin_session_invalid` | Replace `LI_AT` |
+| 503 | `linkedin_challenge_required` | Log in through a browser and clear the check |
+| 503 | `no_linkedin_session` | Set `LI_AT` |
 
-A partial profile is **not** an error. It returns `200` with `meta.partial` set
-to `true`.
+When every strategy fails the same way, that specific error is returned rather
+than a generic one. A dead cookie and a bot check need different responses, and
+`all_strategies_failed` would tell an operator neither.
+
+A partial profile is **not** an error. It returns 200 with `meta.partial: true`.
 
 ---
 
 ## Setup
 
-### Requirements
-
-- Python 3.11 or later
-- A LinkedIn account. **Use a throwaway account, not your main one.**
-
-### Local
+Requires Python 3.11+ and a LinkedIn account. **Use a throwaway account.**
 
 ```bash
-git clone https://github.com/<you>/linkedin-profile-api.git
+git clone https://github.com/kartik6/linkedin-profile-api.git
 cd linkedin-profile-api
-
-make install            # or: python -m venv .venv && pip install -r requirements-dev.txt
-cp .env.example .env    # then add your cookies
-make run                # http://127.0.0.1:8080/docs
+make install
+cp .env.example .env      # then add your cookies
+make run                  # http://127.0.0.1:8080/docs
 ```
 
-### Get the cookies
+### Getting the cookies
 
-1. Log in to LinkedIn in a browser, with the throwaway account.
-2. Open developer tools. Go to **Application**, then **Cookies**, then
-   `https://www.linkedin.com`.
-3. Copy the value of `li_at`.
-4. Copy the value of `JSESSIONID`. It looks like `"ajax:1234567890123456789"`.
-5. Put both in `.env`:
+1. Log in to LinkedIn in a browser with the throwaway account.
+2. DevTools → **Application** → **Cookies** → `https://www.linkedin.com`.
+3. Copy `li_at` and `JSESSIONID` into `.env`.
 
-```bash
-LI_AT=AQEDAT...
-JSESSIONID="ajax:1234567890123456789"
-```
-
-Confirm the session works:
+`li_at` is `HttpOnly`, so `document.cookie` will not show it. Use the
+Application tab, or read the `Cookie:` request header in the Network tab.
 
 ```bash
 curl localhost:8080/api/v1/session
-# {"configured": true, "authenticated": true, "logged_in_as": "your-handle", ...}
+# {"configured": true, "authenticated": true, "logged_in_as": "your-handle"}
 ```
 
-A cookie lasts weeks. It dies when you log out, so **do not log out** of that
-browser session, and do not click "sign out of all devices".
-
-### Docker
-
-```bash
-docker build -t linkedin-profile-api .
-docker run --rm -p 8080:8080 --env-file .env linkedin-profile-api
-```
+The cookie dies if you log out, so close the tab instead.
 
 ---
 
 ## Deploy
 
-The target is [Fly.io](https://fly.io). Fly gives one machine a dedicated IPv4
-address in a region you choose. LinkedIn challenges shared datacenter addresses
-much more often, so a stable address near the account's country raises the
-success rate.
-
 ```bash
 fly auth login
-fly apps create linkedin-profile-api      # the name is global on Fly
-fly deploy --remote-only --ha=false       # one machine. See the note below.
-
-# Secrets live in Fly, never in git. Add them after the first deploy.
-fly secrets set \
-  LI_AT='AQEDAT...' \
-  JSESSIONID='ajax:1234567890123456789'
-
-fly open /docs
+fly apps create linkedin-profile-api
+fly deploy --remote-only --ha=false
+fly secrets set LI_AT='AQEDAT...' JSESSIONID='ajax:1234567890123456789'
 ```
 
-The first deploy works with no cookie. `/health`, `/docs`, `/api/v1/parse` and
-the `public_jsonld` strategy all answer. `fly secrets set` restarts the machine
-and switches the other three strategies on.
+**Run one machine.** Fly creates two by default. The outbound rate limiter and
+the cache both live in process memory, so a second machine doubles the request
+rate toward LinkedIn and halves the cache hit rate. Request rate is the main
+signal LinkedIn uses to decide to challenge a session.
 
-**Run one machine.** Fly creates two by default, for high availability. This
-service must run one, because the outbound rate limiter and the cache both live
-in process memory:
-
-- Two machines double the call rate toward LinkedIn. `OUTBOUND_RPS` is a per
-  process budget, and the two machines do not coordinate. Request rate is the
-  main signal LinkedIn uses to decide to challenge a session.
-- Two machines halve the cache hit rate. Each holds its own cache, so the same
-  profile can reach LinkedIn twice.
-
-Set `REDIS_URL` and add a shared limiter before you scale past one. See
-[known limitations](#known-limitations).
-
-Fly terminates TLS, so HTTPS works with no extra work. `force_https = true` in
-`fly.toml` redirects plain HTTP.
-
-Edit `primary_region` in `fly.toml` before the first deploy. Put it as close to
-the LinkedIn account as you can. `sin` is Singapore, and it is the nearest live
-region to India. `iad` is Virginia. `lhr` is London.
-
-Fly retires regions. Mumbai, `bom`, no longer accepts new machines. If a deploy
-fails with `Region <x> is deprecated`, run `fly platform regions` and pick
-another one.
-
-The same image runs on Render, Railway or Cloud Run. Only the secret syntax
-changes.
+Set `primary_region` in `fly.toml` near the account's country. Fly retires
+regions — `bom` no longer accepts machines. Run `fly platform regions` if a
+deploy is rejected.
 
 ---
 
 ## Operations
 
-### Is the cookie still alive
-
 ```bash
-curl -H "X-API-Key: $KEY" "$BASE/api/v1/session"
+curl "$BASE/api/v1/session"                 # is the cookie alive
+curl "$BASE/api/v1/diagnose?url=<profile>"  # what LinkedIn actually answered
+fly secrets set LI_AT='...' JSESSIONID='...'  # rotate; restarts automatically
+fly secrets set LI_AT_POOL='cookieA:ajax:111,cookieB:ajax:222'  # several accounts
 ```
-
-It reports each session in the pool, its failure count and its quarantine
-timer. Use it to tell a dead cookie apart from a broken parser.
-
-### Rotate a cookie
-
-```bash
-fly secrets set LI_AT='the-new-value' JSESSIONID='ajax:...'
-```
-
-Fly restarts the machine. Use `LI_AT_POOL` for several accounts:
-
-```bash
-fly secrets set LI_AT_POOL='cookieA:ajax:111,cookieB:ajax:222'
-```
-
-### Repair the GraphQL strategy without a deploy
-
-LinkedIn rotates its GraphQL query hashes on every web release. When strategy 2
-starts to fail:
-
-1. Open a profile in a browser with the network panel open.
-2. Find a request to `/voyager/api/graphql`.
-3. Copy the `queryId` parameter.
-4. `fly secrets set QUERY_ID_PROFILE_COMPONENTS='voyagerIdentityDashProfileComponents.<hash>'`
-
-No code change. No new image. Strategy 3 covers the gap while you do it.
-
-### Turn a strategy off
-
-```bash
-fly secrets set STRATEGIES='embedded_json,public_jsonld'
-```
-
-### Tuning
 
 | Variable | Default | Notes |
 |---|---|---|
-| `OUTBOUND_RPS` | `0.5` | Calls per second toward LinkedIn, across all callers. Lower it if you see challenges. |
-| `OUTBOUND_JITTER_MS` | `400` | Random delay added per call. |
-| `CACHE_TTL_S` | `3600` | Longer means fewer LinkedIn calls. |
-| `RATE_LIMIT_PER_MINUTE` | `30` | Per caller limit on our own API. |
-| `REDIS_URL` | unset | Set it to share the cache across instances. |
+| `OUTBOUND_RPS` | `1.0` | Calls per second toward LinkedIn, all callers combined |
+| `SECTIONS` | all | Comma separated. Fewer sections means fewer calls per profile |
+| `CACHE_TTL_S` | `3600` | Longer means fewer LinkedIn calls |
+| `RATE_LIMIT_PER_MINUTE` | `30` | Per caller limit on our own API |
+| `REDIS_URL` | unset | Share the cache across instances |
+
+A full profile costs **1 + 13 calls**. At `OUTBOUND_RPS=1.0` that is about 14
+seconds. Trim `SECTIONS` to the ones you need if that is too slow.
 
 ---
 
 ## Tests
 
-The suite needs **no LinkedIn credentials**. It runs against recorded fixtures,
-so CI is green on a fresh clone.
-
 ```bash
-make test     # 90 tests
+make test     # 95 tests, no credentials needed
 make lint
-make e2e      # the whole stack against a mock LinkedIn
+make e2e      # the whole stack against a mock LinkedIn, 5 failure modes
 ```
 
-`make e2e` starts the real ASGI app, the real HTTP client and the real
-strategies. Only LinkedIn is replaced. It then forces four failure modes and
-checks that the right strategy takes over each time:
-
 ```
-  ok   all            strategy=voyager_profile_view   complete=1.0   experience=2 skills=4
-  ok   no-legacy      strategy=voyager_dash           complete=1.0   experience=2 skills=2
-  ok   voyager-down   strategy=embedded_json          complete=1.0   experience=2 skills=2
-  ok   logged-out     strategy=public_jsonld          complete=0.75  experience=1 skills=0
+ok   all         strategy=voyager_dash  complete=1.0    experience=11 skills=20 certs=12
+ok   handshake   strategy=voyager_dash  complete=1.0    experience=11 skills=20 certs=12
+ok   thin        strategy=voyager_dash  complete=0.667  experience=0  skills=0  certs=0
+ok   dead        http=503 error=linkedin_session_invalid
+ok   challenge   http=503 error=linkedin_challenge_required
 ```
 
-To debug against the real LinkedIn:
+**Fixtures come from real captured responses**, scrubbed of personal data by
+`scripts/make_fixtures.py`. The structure is untouched: real field names, real
+nesting, real types.
+
+This matters. An earlier version of this suite used hand-written fixtures that
+matched what the author *believed* LinkedIn returns. Ninety-six tests passed and
+none could have caught that the belief was wrong. A test built on an assumption
+cannot test that assumption.
+
+To check the parsers against production:
 
 ```bash
-python scripts/capture.py https://www.linkedin.com/in/<name>/ --raw
+python scripts/capture.py https://www.linkedin.com/in/<name>/
 ```
-
-It runs every strategy, prints what each one found, and saves the payloads to
-`captures/`. That directory is in `.gitignore`, because a real capture holds
-another person's personal data.
 
 ### Layout
 
 ```
 app/
-  main.py              HTTP routes, error handlers, OpenAPI
-  models.py            the response schema. The contract.
-  config.py            settings. Every secret comes from the environment.
-  cache.py             memory cache, optional Redis
-  deps.py              API key check, caller rate limit
-  errors.py            error types, each with a stable code
+  main.py          HTTP routes, error handlers, OpenAPI
+  models.py        the response schema — the contract
+  config.py        settings; every secret comes from the environment
+  cache.py         memory cache, optional Redis
+  errors.py        error types, each with a stable code
   linkedin/
-    urls.py            any URL shape -> public identifier
-    session.py         cookie pool, Voyager headers, quarantine
-    client.py          HTTP, pacing, retry, failure detection
-    entities.py        index the flat entity graph
-    text.py            read LinkedIn's four text wrappers
-    images.py          VectorImage -> real URLs
-    dates.py           partial dates and durations
-    components.py      the rendered card tree fallback
-    normalize.py       raw payloads -> Profile
-    service.py         run the strategies, merge, score
-    strategies/        the four ways in
-tests/                 90 tests, fixtures, no credentials needed
+    urls.py        any URL shape -> public identifier
+    session.py     cookie jar per session, Voyager headers, redirect watcher
+    client.py      HTTP, pacing, retry, failure naming
+    entities.py    index the flat entity graph
+    text.py        read LinkedIn's four text wrappers
+    images.py      VectorImage -> real URLs
+    dates.py       partial dates and durations
+    normalize.py   raw payloads -> Profile
+    service.py     orchestration, merge, score
+    strategies/    the verified strategy, and why the others were removed
 scripts/
-  mock_linkedin.py     a stand in for LinkedIn
-  e2e.py               full stack check across four failure modes
-  capture.py           record real payloads for debugging
-  make_fixtures.py     rebuild the HTML fixtures
+  mock_linkedin.py  serves the fixtures, reproduces five failure modes
+  e2e.py            full stack check
+  capture.py        record real payloads for debugging
+  make_fixtures.py  rebuild fixtures from captures, scrubbing personal data
 ```
 
 ---
 
 ## Known limitations
 
-**Legal.** Automated access breaks LinkedIn's User Agreement. See the
-[legal note](#legal-note).
+**Legal.** Automated access breaks LinkedIn's User Agreement. See below.
 
-**The account can get restricted.** Volume raises the risk. LinkedIn may show a
-CAPTCHA, force a password reset, or restrict the account. Use a throwaway
-account. Keep `OUTBOUND_RPS` low. The API returns
-`linkedin_challenge_required` when this happens, and it does not hide it.
+**Role descriptions are not available.** Verified: `description` appeared on 0
+of 11 real positions. `profilePositions` does not return it. The field stays in
+the schema and is always `null`.
 
-**Datacenter IP addresses draw more checks.** A cloud address is challenged more
-often than a home address. A dedicated Fly IPv4 in the account's country helps.
-A residential proxy would help more. This build has no proxy support.
+**Location is only a country code.** The API returns
+`location: {countryCode: "IN"}` and `geoLocation: {geoUrn: ...}`. The display
+name — "Greater Bengaluru Area" — is not in the response. Resolving `geoUrn`
+needs a route we have not mapped.
 
-**Visibility follows the login, not the URL.** LinkedIn shows a 1st degree
-connection more than a stranger. The same profile through two different cookies
-returns different data. Contact details, full connection counts and some
-sections are absent for distant viewers.
+**Company and industry are URNs, not names.** `companyUrn` and `industryUrn` come
+back unresolved, and `included` is empty on these routes, so there are no logos
+or industry names without extra calls.
 
-**Image URLs expire.** They are signed and last a few hours. `expires_at` says
-when. Download the bytes if you need them longer.
+**Employment type is a URN.** `employmentTypeUrn: urn:li:fsd_employmentType:20`
+with no lookup table, so `employment_type` is always `null`.
 
-**Some fields need extra calls that this build skips.** Recommendations, full
-endorsement lists, contact details and post activity each need their own
-endpoint. The schema has no field for them yet.
+**Follower and connection counts are absent** from the routes we verified.
 
-**GraphQL query hashes rotate.** Strategy 2 is the fragile one. It is
-configurable for that reason, and strategies 3 and 4 cover the gap.
+**14 calls per profile.** One top card plus 13 sections. That is slow and it is
+the main risk to the account. Trim `SECTIONS`.
 
-**Rate limits are per process.** The token bucket and the caller limiter live in
-memory. Run more than one machine and the real outbound rate multiplies. Redis
-holds the cache across instances but not the limiter. A shared limiter is the
-next piece of work.
+**One machine only.** The rate limiter and cache are per process. Two instances
+double the real outbound rate. Redis shares the cache but not the limiter.
 
-**No JavaScript is executed.** Sections that load only after a click, such as
-"show all 42 skills", may come back short. The typed entity routes usually
-carry the full list, and the card tree fallback does not.
+**The account can get restricted.** Use a throwaway. Keep `OUTBOUND_RPS` low.
+The API returns `linkedin_challenge_required` rather than hiding it.
 
-**Fixtures are synthetic.** They match the payload shapes I observed, and they
-are hand written so the repository holds nobody's personal data. Run
-`scripts/capture.py` against a real profile to check the parsers against
-production.
+**Datacenter IPs draw more checks** than residential ones. No proxy support.
 
-**Docker build is unverified in this environment.** The Dockerfile is standard
-and the same command line runs in CI, but no local daemon was available to build
-the image here.
+**Visibility follows the login.** The same profile through two different cookies
+returns different data. A stranger sees less than a 1st-degree connection.
+
+**Image URLs expire.** They are signed and last hours. `expires_at` says when.
+
+**Verified against one profile.** Findings come from a single real profile
+captured on 28 August 2026. Field presence may vary. `scripts/capture.py` is
+how you check another.
 
 ### With more time
 
-1. A shared rate limiter in Redis, so many instances stay under one budget.
-2. A residential proxy pool, chosen per session.
-3. A weekly job that captures real payloads and fails CI when a shape changes,
-   so the parser breaks in CI and not in production.
-4. Recommendations, contact details and activity.
-5. A webhook mode for large batches, instead of a synchronous call.
+1. Resolve `geoUrn`, `companyUrn`, `industryUrn` into names.
+2. A shared rate limiter in Redis, so many instances stay under one budget.
+3. Parse the SDUI stream as a fallback for when the REST routes are retired.
+4. A scheduled job that captures a real profile and fails CI when a shape
+   changes — so the parser breaks in CI, not in production.
 
 ---
 
 ## Legal note
 
-This project reads LinkedIn data through a logged in session. That breaks
+This project reads LinkedIn data through a logged-in session. That breaks
 LinkedIn's User Agreement, which forbids automated access. LinkedIn may restrict
 or close an account it detects.
 
 *hiQ Labs v. LinkedIn* found that scraping **public** data is not a Computer
-Fraud and Abuse Act violation. That ruling does not cover data behind a login,
-and it does not override a contract. This service reads data behind a login when
-a cookie is set.
+Fraud and Abuse Act violation. That ruling does not cover data behind a login
+and does not override a contract. This service reads data behind a login.
 
 Profile data is personal data under the GDPR and the DPDP Act. A lawful basis is
-needed to store it, and the person has rights over it.
+needed to store it.
 
-I built this for a hiring challenge, to show how the API works. Do not run it
-against a real account at volume, and do not build a product on it without
-counsel. LinkedIn's official
+Built for a hiring challenge, to show how the API works. LinkedIn's official
 [Marketing and Talent Solutions APIs](https://learn.microsoft.com/en-us/linkedin/)
 are the supported path.
 

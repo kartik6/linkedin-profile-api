@@ -30,7 +30,7 @@ from app.errors import (
     ProfileNotFound,
     UpstreamRateLimited,
 )
-from app.linkedin.session import LinkedInSession, SessionPool
+from app.linkedin.session import LinkedInSession, SessionPool, _watch_redirects
 
 log = logging.getLogger(__name__)
 
@@ -70,15 +70,20 @@ class LinkedInClient:
         self.voyager = f"{self.base_url}/voyager/api"
         self.pool = pool or SessionPool.from_settings(settings)
         self.limiter = RateLimiter(settings.outbound_rps, settings.outbound_jitter_ms)
-        self._client = httpx.AsyncClient(
+        # Used only for logged out requests. Authenticated calls go through
+        # the per session clients, which each hold their own cookie jar.
+        self._anon = httpx.AsyncClient(
             timeout=httpx.Timeout(settings.request_timeout_s),
-            follow_redirects=False,
+            follow_redirects=True,
+            max_redirects=5,
             headers={"user-agent": settings.user_agent},
             http2=True,
+            event_hooks={"response": [_watch_redirects]},
         )
 
     async def aclose(self) -> None:
-        await self._client.aclose()
+        await self._anon.aclose()
+        await self.pool.aclose()
 
     # -- core --------------------------------------------------------------
 
@@ -92,7 +97,6 @@ class LinkedInClient:
         accept: str | None = None,
         referer: str | None = None,
         authenticated: bool = True,
-        follow_redirects: bool = False,
     ) -> httpx.Response:
         session = session or (self.pool.acquire() if authenticated else None)
         attempt = 0
@@ -102,22 +106,26 @@ class LinkedInClient:
             attempt += 1
             await self.limiter.wait()
 
-            headers = (
-                session.headers(referer=referer, accept=accept)
-                if session
-                else {"accept": accept or "text/html,application/xhtml+xml"}
-            )
-            cookies = session.cookies if session else None
+            if session:
+                headers = session.headers(referer=referer, accept=accept)
+                transport = session.client(
+                    user_agent=self.settings.user_agent,
+                    timeout=self.settings.request_timeout_s,
+                )
+            else:
+                headers = {"accept": accept or "text/html,application/xhtml+xml"}
+                transport = self._anon
 
             try:
-                response = await self._client.request(
-                    method,
-                    url,
-                    params=params,
-                    headers=headers,
-                    cookies=cookies,
-                    follow_redirects=follow_redirects,
+                response = await transport.request(
+                    method, url, params=params, headers=headers
                 )
+            except ChallengeRequired:
+                # Raised by the session's redirect hook. The cookie is not dead,
+                # but this session needs a human before it works again.
+                if session:
+                    session.mark_failure(hard=True)
+                raise
             except httpx.TimeoutException as exc:
                 last_error = exc
                 log.warning("Timeout on %s, attempt %s.", url, attempt)
@@ -173,9 +181,6 @@ class LinkedInClient:
                     f"LinkedIn redirected to a check page: {candidate}"
                 )
 
-        if status in (301, 302, 303, 307, 308):
-            return
-
         if status == 401:
             raise AuthenticationFailed("LinkedIn rejected the session cookie (401).")
         if status == 403:
@@ -204,8 +209,6 @@ class LinkedInClient:
     async def get_json(self, path: str, **kwargs: Any) -> dict[str, Any]:
         url = path if path.startswith("http") else f"{self.voyager}{path}"
         response = await self.request("GET", url, **kwargs)
-        if response.status_code in (301, 302, 303, 307, 308):
-            raise ProfileNotFound("LinkedIn redirected away from the profile.")
         try:
             data = response.json()
         except ValueError as exc:
@@ -218,9 +221,6 @@ class LinkedInClient:
 
     async def get_html(self, url: str, **kwargs: Any) -> str:
         kwargs.setdefault("accept", "text/html,application/xhtml+xml,application/xml;q=0.9")
-        # LinkedIn redirects page requests often, to add a slash or to set a
-        # routing cookie. Follow them. A redirect is not a missing profile.
-        kwargs.setdefault("follow_redirects", True)
         response = await self.request("GET", url, **kwargs)
         return response.text
 
@@ -237,15 +237,17 @@ class LinkedInClient:
             if session
             else {"accept": "text/html,application/xhtml+xml"}
         )
+        transport = (
+            session.client(
+                user_agent=self.settings.user_agent,
+                timeout=self.settings.request_timeout_s,
+            )
+            if session
+            else self._anon
+        )
         await self.limiter.wait()
         try:
-            response = await self._client.request(
-                "GET",
-                url,
-                headers=headers,
-                cookies=session.cookies if session else None,
-                follow_redirects=False,
-            )
+            response = await transport.request("GET", url, headers=headers)
         except httpx.HTTPError as exc:
             return {"url": url, "transport_error": str(exc)}
 
@@ -254,7 +256,8 @@ class LinkedInClient:
             "url": url,
             "authenticated": session is not None,
             "status": response.status_code,
-            "location": response.headers.get("location"),
+            "final_url": str(response.url),
+            "redirects": len(response.history),
             "content_type": response.headers.get("content-type"),
             "content_length": response.headers.get("content-length"),
             "body_head": body,

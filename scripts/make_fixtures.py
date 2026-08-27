@@ -1,125 +1,162 @@
-"""Build the HTML fixtures from the JSON fixtures.
+"""Build test fixtures from real captures, with the personal data removed.
 
-The tests need a profile page that looks like the one LinkedIn serves. Rather
-than commit a huge real page, we wrap our own JSON fixture in the same hidden
-<code> blocks LinkedIn uses. The parser sees the same structure.
+Why this exists. The first version of this project shipped hand written
+fixtures. They matched what we *believed* LinkedIn returns. Every test passed
+and every test was meaningless, because the belief was wrong.
+
+So fixtures now come from real captured responses. We keep the structure
+exactly, byte for byte in shape, and replace only the values that identify a
+person. The tests then check the parser against LinkedIn's real field names,
+nesting and types, while the repository holds nobody's personal data.
 
 Run:  python scripts/make_fixtures.py
+Input:  captures/dash_query.json, captures/dash_direct.json, captures/sections.json
+Output: tests/fixtures/*.json
 """
 
 from __future__ import annotations
 
 import json
 import pathlib
+import re
+from typing import Any
 
-FIXTURES = pathlib.Path(__file__).resolve().parent.parent / "tests" / "fixtures"
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+CAPTURES = ROOT / "captures"
+FIXTURES = ROOT / "tests" / "fixtures"
 
-PAGE = """<!DOCTYPE html>
-<html lang="en"><head><title>Ada Lovelace | LinkedIn</title>
-<meta name="description" content="Principal Engineer at Analytical Engines">
-</head><body>
-<div id="main">Server rendered markup lives here.</div>
-{blocks}
-<script>window.__ready = true;</script>
-</body></html>
-"""
+FAKE_ID = "ACoAAAFAKEIDFAKEIDFAKEIDFAKEIDFAKEIDxxx"
+FAKE_PUBLIC_ID = "ada-lovelace-000000000"
 
-BLOCK = '<code style="display: none" id="bpr-guid-{index}">{payload}</code>'
-
-JSONLD = """<!DOCTYPE html>
-<html lang="en"><head><title>Ada Lovelace | LinkedIn</title>
-<script type="application/ld+json">{payload}</script>
-</head><body><main>Public profile</main></body></html>
-"""
-
-PERSON = {
-    "@context": "http://schema.org",
-    "@graph": [
-        {
-            "@type": "WebPage",
-            "url": "https://www.linkedin.com/in/adalovelace/",
-        },
-        {
-            "@type": "ProfilePage",
-            "mainEntity": {
-                "@type": "Person",
-                "name": "Ada Lovelace",
-                "givenName": "Ada",
-                "familyName": "Lovelace",
-                "url": "https://www.linkedin.com/in/adalovelace/",
-                "jobTitle": ["Principal Engineer"],
-                "description": "I build systems that stay up.",
-                "image": {
-                    "@type": "ImageObject",
-                    "contentUrl": "https://media.licdn.com/dms/image/v2/D5603AQ/photo.jpg",
-                },
-                "address": {
-                    "@type": "PostalAddress",
-                    "addressLocality": "Bengaluru",
-                    "addressCountry": "IN",
-                },
-                "worksFor": [
-                    {
-                        "@type": "Organization",
-                        "name": "Analytical Engines",
-                        "url": "https://www.linkedin.com/company/analytical-engines/",
-                        "member": {
-                            "@type": "OrganizationRole",
-                            "startDate": "2021-05",
-                            "description": "Own the storage layer.",
-                        },
-                    }
-                ],
-                "alumniOf": [
-                    {
-                        "@type": "EducationalOrganization",
-                        "name": "Indian Institute of Technology, Bombay",
-                        "url": "https://www.linkedin.com/school/iit-bombay/",
-                        "member": {
-                            "@type": "OrganizationRole",
-                            "startDate": "2013",
-                            "endDate": "2017",
-                        },
-                    }
-                ],
-                "knowsLanguage": [{"@type": "Language", "name": "English"}],
-            },
-        },
-    ],
+# Value replacements, applied by key name. The shape survives, the person does not.
+REPLACE: dict[str, str] = {
+    "firstName": "Ada",
+    "lastName": "Lovelace",
+    "publicIdentifier": FAKE_PUBLIC_ID,
+    "headline": "Principal Engineer | Distributed Systems | Storage",
+    "summary": "I build systems that stay up.\nCurrently focused on storage engines.",
+    "a11yText": "Ada Lovelace",
+    "companyName": "Analytical Engines",
+    "schoolName": "Institute of Technology",
+    "authority": "Certification Authority",
+    "licenseNumber": "CERT-000-111",
+    "title": "Principal Engineer",
+    "name": "Distributed Systems",
+    "fieldOfStudy": "Computer Science",
+    "degreeName": "Bachelor of Technology",
+    "grade": "8.9",
+    "locationName": "Bengaluru, Karnataka, India",
+    "geoLocationName": "Bengaluru, Karnataka, India",
+    "trackingId": "AAAAAAAAAAAAAAAAAAAAAA==",
+    "url": "https://example.com/credential",
+    "description": "Redacted for the fixture.",
 }
 
+# Keys whose value is a locale map, for example {"en_US": "..."}.
+MULTILOCALE = re.compile(r"^multiLocale(.+)$")
 
-def build_profile_page() -> str:
-    payload = json.loads((FIXTURES / "dash_profile.json").read_text())
-    included = payload["included"]
+# These must stay distinct across entities. If every Skill were called the same
+# thing, the deduplication in _pool_skills would collapse twenty into one and
+# the fixture would hide a real behaviour instead of testing it.
+DISTINCT = {"name", "title", "companyName", "schoolName", "authority", "licenseNumber"}
 
-    # LinkedIn splits one profile across several blocks. Do the same, so the
-    # test proves that we merge them.
-    half = len(included) // 2
-    chunks = [
-        {"data": payload["data"], "included": included[:half]},
-        {"data": {"$type": "com.linkedin.restli.common.CollectionResponse"},
-         "included": included[half:]},
-    ]
-    blocks = "\n".join(
-        BLOCK.format(index=1000 + i, payload=json.dumps(chunk, separators=(",", ":")))
-        for i, chunk in enumerate(chunks)
-    )
-    # A decoy block that is not JSON. The parser must skip it, not crash.
-    blocks += '\n<code id="bpr-guid-9999">not json at all</code>'
-    return PAGE.format(blocks=blocks)
+# The exploratory probes used short ad hoc names. Fixtures use the real route
+# segment, so a reader can map a fixture straight onto the URL that produced it.
+CANONICAL_ROUTE = {
+    "positions": "profilePositions",
+    "educations": "profileEducations",
+    "skills": "profileSkills",
+    "posgroups": "profilePositionGroups",
+}
+
+REAL_ID_RE = re.compile(r"ACoAA[A-Za-z0-9_-]{10,}")
+MEMBER_ID_RE = re.compile(r"urn:li:member:\d+")
+
+
+def _value(key: str, counters: dict[str, int]) -> str:
+    base = REPLACE[key]
+    if key in DISTINCT:
+        counters[key] = counters.get(key, 0) + 1
+        return f"{base} {counters[key]}"
+    return base
+
+
+def scrub(node: Any, counters: dict[str, int] | None = None) -> Any:
+    counters = {} if counters is None else counters
+
+    if isinstance(node, dict):
+        # Resolve a dict's own replacements first, so `name` and
+        # `multiLocaleName` in the same entity end up agreeing.
+        local = {
+            key: _value(key, counters)
+            for key, value in node.items()
+            if key in REPLACE and isinstance(value, str)
+        }
+        out: dict[str, Any] = {}
+        for key, value in node.items():
+            if key in local:
+                out[key] = local[key]
+                continue
+            match = MULTILOCALE.match(key)
+            if match:
+                base = match.group(1)
+                base = base[0].lower() + base[1:]
+                if base in local and isinstance(value, dict):
+                    out[key] = {loc: local[base] for loc in value}
+                    continue
+            out[key] = scrub(value, counters)
+        return out
+    if isinstance(node, list):
+        return [scrub(item, counters) for item in node]
+    if isinstance(node, str):
+        node = REAL_ID_RE.sub(FAKE_ID, node)
+        node = MEMBER_ID_RE.sub("urn:li:member:1000000", node)
+        return node
+    return node
 
 
 def main() -> None:
-    (FIXTURES / "profile_page.html").write_text(build_profile_page())
-    (FIXTURES / "public_page.html").write_text(
-        JSONLD.format(payload=json.dumps(PERSON, separators=(",", ":")))
-    )
-    (FIXTURES / "authwall_page.html").write_text(
-        "<!DOCTYPE html><html><body><div class='authwall'>"
-        "Join now to view Ada's full profile</div></body></html>"
-    )
-    print(f"Wrote fixtures into {FIXTURES}")
+    if not CAPTURES.exists():
+        raise SystemExit(
+            "No captures/ directory. Capture real responses first, see LEARNING-NOTES.md."
+        )
+
+    FIXTURES.mkdir(parents=True, exist_ok=True)
+    written = []
+
+    for name in ("dash_query", "dash_direct"):
+        src = CAPTURES / f"{name}.json"
+        if src.exists():
+            body = scrub(json.loads(src.read_text()))
+            (FIXTURES / f"{name}.json").write_text(json.dumps(body, indent=2))
+            written.append(f"{name}.json")
+
+    sections_src = CAPTURES / "sections.json"
+    if sections_src.exists():
+        raw = json.loads(sections_src.read_text())
+        keep = {}
+        for route, result in raw.items():
+            if result.get("status") != 200:
+                continue
+            name = CANONICAL_ROUTE.get(route, route)
+            keep[name] = scrub(json.loads(result["body"]))
+        (FIXTURES / "sections.json").write_text(json.dumps(keep, indent=2))
+        written.append(f"sections.json ({len(keep)} routes)")
+
+    print(f"Wrote into {FIXTURES}:")
+    for item in written:
+        print(f"  {item}")
+
+    # Guard. A fixture must never carry a real identifier.
+    leaked = []
+    for path in FIXTURES.glob("*.json"):
+        text = path.read_text()
+        for found in REAL_ID_RE.findall(text):
+            if found != FAKE_ID:
+                leaked.append((path.name, found))
+    if leaked:
+        raise SystemExit(f"Real identifiers survived scrubbing: {leaked[:5]}")
+    print("Scrub check passed. No real identifiers remain.")
 
 
 if __name__ == "__main__":
