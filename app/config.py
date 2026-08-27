@@ -34,9 +34,12 @@ class Settings(BaseSettings):
     li_at_pool: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
     linkedin_base_url: str = "https://www.linkedin.com"
+    # Must agree with `user_agent`. A Chrome/151 user agent paired with
+    # sec-ch-ua claiming 131 is a contradiction no real browser produces.
+    chrome_major: str = "151"
     user_agent: str = (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
     )
     linkedin_lang: str = "en_US"
 

@@ -287,8 +287,67 @@ class TestVoyagerHeaders:
         await VoyagerDashStrategy().fetch(client, ref)
 
         sent = {k.lower() for k in route.calls[0].request.headers}
-        for invented in ("x-li-track", "x-li-page-instance", "sec-ch-ua", "x-li-lang"):
+        # These two are absent from the captured working request, so we must
+        # not send them. x-li-track in particular announced mpName voyager-web
+        # at a client version that no longer exists.
+        for invented in ("x-li-track", "x-li-page-instance", "x-li-lang"):
             assert invented not in sent, f"{invented} was fabricated and must not be sent"
+
+    @respx.mock
+    async def test_carries_the_liap_authentication_flag(self, client, ref, top_card):
+        """`liap=true` marks the session authenticated on www.linkedin.com.
+
+        It is set at login, and we only ever copied li_at and JSESSIONID out of
+        the browser, so we never had it. LinkedIn saw a session token with no
+        matching authentication flag and cleared the session outright:
+
+            Set-Cookie: liap=...; Expires=Thu, 01-Jan-1970; Max-Age=0
+            Set-Cookie: li_at=...; Expires=Thu, 01-Jan-1970; Max-Age=0
+
+        That is the logout that killed every run after three or four calls.
+        """
+        route = respx.get(TOP_CARD_URL).mock(return_value=httpx.Response(200, json=top_card))
+        for name in SECTION_ROUTES:
+            respx.get(f"{BASE}/identity/dash/{name}").mock(
+                return_value=httpx.Response(200, json={"included": []})
+            )
+        await VoyagerDashStrategy().fetch(client, ref)
+
+        cookie_header = route.calls[0].request.headers.get("cookie", "")
+        assert "liap=true" in cookie_header
+
+    @respx.mock
+    async def test_client_hints_agree_with_the_user_agent(self, client, ref, top_card):
+        """A Chrome/151 user agent with sec-ch-ua claiming 131 is a contradiction."""
+        route = respx.get(TOP_CARD_URL).mock(return_value=httpx.Response(200, json=top_card))
+        for name in SECTION_ROUTES:
+            respx.get(f"{BASE}/identity/dash/{name}").mock(
+                return_value=httpx.Response(200, json={"included": []})
+            )
+        await VoyagerDashStrategy().fetch(client, ref)
+
+        headers = route.calls[0].request.headers
+        assert "Chrome/151" in headers["user-agent"]
+        assert 'v="151"' in headers["sec-ch-ua"]
+
+    @respx.mock
+    async def test_trace_headers_are_internally_consistent(self, client, ref, top_card):
+        """traceparent embeds the pageforestid, and tracestate the span id."""
+        route = respx.get(TOP_CARD_URL).mock(return_value=httpx.Response(200, json=top_card))
+        for name in SECTION_ROUTES:
+            respx.get(f"{BASE}/identity/dash/{name}").mock(
+                return_value=httpx.Response(200, json={"included": []})
+            )
+        await VoyagerDashStrategy().fetch(client, ref)
+
+        h = route.calls[0].request.headers
+        forest, parent, state = (
+            h["x-li-pageforestid"], h["x-li-traceparent"], h["x-li-tracestate"]
+        )
+        version, trace_id, span_id, flags = parent.split("-")
+        assert (version, flags) == ("00", "00")
+        assert trace_id == forest
+        assert state == f"LinkedIn={span_id}"
 
 
 class TestWarmUp:

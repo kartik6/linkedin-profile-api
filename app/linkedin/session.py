@@ -110,10 +110,34 @@ class LinkedInSession:
 
     @property
     def cookies(self) -> dict[str, str]:
+        """The cookies a logged in browser actually sends.
+
+        Taken from a real working request captured on 2026-08-28, not guessed.
+
+        `liap` is the one that matters. It marks the session as authenticated
+        on www.linkedin.com, and it is set at login. We never carried it,
+        because we only ever copied `li_at` and `JSESSIONID` out of the
+        browser. LinkedIn saw a session token with no matching authentication
+        flag, treated the state as inconsistent, and cleared the session:
+
+            Set-Cookie: liap=...; Expires=Thu, 01-Jan-1970; Max-Age=0
+            Set-Cookie: li_at=...; Expires=Thu, 01-Jan-1970; Max-Age=0
+
+        That is the logout we kept hitting after three or four calls.
+
+        The rest are constants observed in the same request. `bcookie`,
+        `bscookie` and `lidc` are not here because the warm up request
+        collects them from LinkedIn directly.
+        """
         return {
             "li_at": self.li_at,
             "JSESSIONID": f'"{self.csrf_token}"',
+            "liap": "true",
+            "visit": "v=1&M",
             "lang": "v=2&lang=en-us",
+            "li_theme": "light",
+            "li_theme_set": "app",
+            "timezone": "Asia/Calcutta",
         }
 
     def client(self, *, user_agent: str, timeout: float) -> httpx.AsyncClient:
@@ -146,7 +170,13 @@ class LinkedInSession:
             await self._client.aclose()
             self._client = None
 
-    def headers(self, *, referer: str | None = None, accept: str | None = None) -> dict[str, str]:
+    def headers(
+        self,
+        *,
+        referer: str | None = None,
+        accept: str | None = None,
+        chrome_major: str = "151",
+    ) -> dict[str, str]:
         """Send only the headers we proved Voyager requires.
 
         This list is short on purpose, and the reason matters.
@@ -175,11 +205,33 @@ class LinkedInSession:
         If a header is ever added back, it must come from an observed request,
         not from a plausible guess.
         """
+        # W3C Trace Context. The captured request carried:
+        #   x-li-pageforestid: <32 hex>
+        #   x-li-traceparent:  00-<same 32 hex>-<16 hex>-00
+        #   x-li-tracestate:   LinkedIn=<same 16 hex>
+        # The values are per request, so we generate them in that exact shape
+        # rather than replaying a captured one.
+        trace_id = uuid.uuid4().hex
+        span_id = uuid.uuid4().hex[:16]
+
         headers = {
             "accept": accept or "application/vnd.linkedin.normalized+json+2.1",
             "accept-language": "en-US,en;q=0.9",
             "csrf-token": self.csrf_token,
             "x-restli-protocol-version": "2.0.0",
+            "priority": "u=1, i",
+            "sec-ch-ua": (
+                f'"Not=A?Brand";v="99", "Google Chrome";v="{chrome_major}", '
+                f'"Chromium";v="{chrome_major}"'
+            ),
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"macOS"',
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-origin",
+            "x-li-pageforestid": trace_id,
+            "x-li-traceparent": f"00-{trace_id}-{span_id}-00",
+            "x-li-tracestate": f"LinkedIn={span_id}",
         }
         if referer:
             headers["referer"] = referer

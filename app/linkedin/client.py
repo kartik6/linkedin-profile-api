@@ -177,7 +177,11 @@ class LinkedInClient:
             await self.limiter.wait()
 
             if session:
-                headers = session.headers(referer=referer, accept=accept)
+                headers = session.headers(
+                    referer=referer,
+                    accept=accept,
+                    chrome_major=self.settings.chrome_major,
+                )
                 transport = session.client(
                     user_agent=self.settings.user_agent,
                     timeout=self.settings.request_timeout_s,
@@ -311,7 +315,10 @@ class LinkedInClient:
         """
         session = self.pool.acquire() if authenticated and self.pool.configured else None
         headers = (
-            session.headers(accept="application/vnd.linkedin.normalized+json+2.1")
+            session.headers(
+                accept="application/vnd.linkedin.normalized+json+2.1",
+                chrome_major=self.settings.chrome_major,
+            )
             if session
             else {"accept": "text/html,application/xhtml+xml"}
         )
