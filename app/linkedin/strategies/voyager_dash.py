@@ -41,7 +41,6 @@ domain entities. There is no Position or Education in it to read.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 
 from app.errors import LinkedInAPIError, ProfileNotFound
@@ -142,7 +141,11 @@ class VoyagerDashStrategy(Strategy):
                 log.exception("Section %s raised for %s", route, ref.public_identifier)
                 return route, None, "unexpected_error"
 
-        results = await asyncio.gather(*(one(route) for route in wanted))
+        # Sequential on purpose. Firing every section at once is what a
+        # script looks like, and we watched LinkedIn revoke a live session in
+        # the middle of that burst. The shared limiter paces us either way, so
+        # this costs nothing in wall clock and looks far less mechanical.
+        results = [await one(route) for route in wanted]
         for route, section_pool, error in results:
             if section_pool is not None:
                 pool.merge(section_pool)

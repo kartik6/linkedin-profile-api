@@ -42,9 +42,9 @@ class Settings(BaseSettings):
 
     # --- pacing. These protect the LinkedIn account, not our server. ---
     outbound_rps: float = Field(
-        default=1.0, description="Requests per second toward LinkedIn, across all callers."
+        default=0.5, description="Requests per second toward LinkedIn, across all callers."
     )
-    outbound_jitter_ms: int = 400
+    outbound_jitter_ms: int = 1200
     request_timeout_s: float = 20.0
     max_retries: int = 3
 
@@ -63,9 +63,25 @@ class Settings(BaseSettings):
         default_factory=lambda: ["voyager_dash"]
     )
 
-    # Which profile sections to fetch. Each one costs a request to LinkedIn, so
-    # a shorter list is faster and safer for the account. Empty means all.
-    sections: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    # Which profile sections to fetch. Each one costs a request to LinkedIn.
+    #
+    # This default is deliberately short. Fetching all thirteen fires fourteen
+    # API calls in a burst, which is a pattern no human browsing produces. We
+    # watched LinkedIn revoke a freshly issued session part way through exactly
+    # that burst, twice. Five calls covers the sections almost every profile
+    # actually has.
+    #
+    # Set SECTIONS to a longer comma separated list to fetch more, at the cost
+    # of a higher chance the session is killed.
+    sections: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: [
+            "profilePositions",
+            "profileEducations",
+            "profileSkills",
+            "profileCertifications",
+            "profileLanguages",
+        ]
+    )
 
     @field_validator("api_keys", "li_at_pool", "strategies", "sections", mode="before")
     @classmethod
