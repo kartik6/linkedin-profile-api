@@ -189,7 +189,68 @@ Sampling one position would have been misleading in the other direction too:
 the first one examined happened to be the one *without* `companyName`, which
 almost led to a wrong conclusion about where company data lives.
 
-### 9. Why only one strategy
+### 9. The authentication story is not what the guides say
+
+Every write-up on LinkedIn scraping says the same thing: grab `li_at` and you
+have a session. That is wrong, and it cost this project several days.
+
+A LinkedIn session is **three** cookies:
+
+| Cookie | Role |
+|---|---|
+| `li_at` | the session token |
+| `JSESSIONID` | must also be echoed into the `csrf-token` header |
+| `liap` | marks the session authenticated on `www.linkedin.com` |
+
+`liap` is set at login. If you copy only `li_at` and `JSESSIONID` out of a
+browser, LinkedIn receives a session token with no matching authentication
+flag, decides the state is inconsistent, and **deletes the session**:
+
+```
+Set-Cookie: liap=...; Expires=Thu, 01-Jan-1970 00:00:00 GMT; Max-Age=0
+Set-Cookie: li_at=...; Expires=Thu, 01-Jan-1970 00:00:00 GMT; Max-Age=0
+```
+
+An expiry in the past is a deletion, not an assignment. Paired with a `302`
+back to the same URL, it is a logout instruction. A client that follows the
+redirect presents the same dead token, is logged out again, and loops until it
+hits its redirect limit.
+
+Every run died after three or four calls this way, on the deployment and on a
+home connection alike.
+
+### 10. How that was actually found, and the mistake that delayed it
+
+Six explanations were proposed for the loop. Five were wrong:
+
+| Hypothesis | Killed by |
+|---|---|
+| Missing `lidc` routing cookie | Warm up added it. Loop continued. |
+| Missing browser identity cookies | Warm up added those too. Loop continued. |
+| Duplicate `li_at` in the cookie jar | `duplicate_cookies_dropped` stayed 0. |
+| Datacenter IP address | Identical failure from a residential connection. |
+| Too many calls in a burst | The browser made 20+ of the same calls fine. |
+| Fabricated `x-li-track` header | Real. Bought one extra call, did not fix it. |
+
+What ended it was one command: **Copy as cURL** on a request that worked,
+diffed against ours. `liap` was in one and not the other.
+
+That step was in the plan from the start, as "take a working request and
+remove things until it breaks". It was skipped once the routes began returning
+200s, because it felt like solved ground. Everything after that was reasoning
+about mechanisms instead of comparing against a known good sample.
+
+**Diff against something that works before theorising about why yours does
+not.** It is the cheapest diagnostic available and it was available the whole
+time.
+
+The same diff proved two other things. `x-li-track` and `x-li-page-instance`
+appear nowhere in a real request, so sending them was pure invention — the
+header announced `voyager-web` at a client version that no longer exists.
+And the `sec-fetch-*` and trace headers we now send are copied from the
+capture rather than guessed.
+
+### 11. Why only one strategy
 
 An earlier version of this service had four fetch strategies. Three were removed
 after testing proved them dead — 410 Gone, or looking for a payload format the
@@ -420,7 +481,7 @@ seconds. Trim `SECTIONS` to the ones you need if that is too slow.
 ## Tests
 
 ```bash
-make test     # 95 tests, no credentials needed
+make test     # 109 tests, no credentials needed
 make lint
 make e2e      # the whole stack against a mock LinkedIn, 5 failure modes
 ```
@@ -481,6 +542,15 @@ scripts/
 
 **Legal.** Automated access breaks LinkedIn's User Agreement. See below.
 
+**Three cookies are required, not one.** `LI_AT` alone will not work. The
+service also needs `JSESSIONID`, and it sends `liap=true` itself. Without the
+authentication flag LinkedIn deletes the session after a few calls. See
+[approach section 9](#9-the-authentication-story-is-not-what-the-guides-say).
+
+**Sessions still expire.** LinkedIn revokes them on its own schedule. When it
+does, the API returns `linkedin_session_invalid` on the first response rather
+than looping, and `/api/v1/session` reports it. Replace the cookies.
+
 **Role descriptions are not available.** Verified: `description` appeared on 0
 of 11 real positions. `profilePositions` does not return it. The field stays in
 the schema and is always `null`.
@@ -518,6 +588,11 @@ returns different data. A stranger sees less than a 1st-degree connection.
 **Verified against one profile.** Findings come from a single real profile
 captured on 28 August 2026. Field presence may vary. `scripts/capture.py` is
 how you check another.
+
+**No browser is used.** The service speaks HTTP directly through `httpx` and
+ships no HTML parser, no Playwright, no Selenium, no headless Chrome. A
+browser was used only as a research instrument, by hand, to observe what
+LinkedIn's own site does.
 
 ### With more time
 
