@@ -1,0 +1,44 @@
+# Fly.io deployment.
+#
+# Why Fly: it gives one machine a dedicated IPv4 address in a region we pick.
+# LinkedIn challenges shared datacenter addresses far more often, so a stable
+# address in the same country as the account raises the success rate a lot.
+#
+# Set the secrets before the first deploy:
+#   fly secrets set LI_AT=... JSESSIONID='ajax:...' API_KEYS=...
+
+app = "linkedin-profile-api"
+primary_region = "bom"          # Mumbai. Move this near your account's country.
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+  LOG_LEVEL = "INFO"
+  CACHE_TTL_S = "3600"
+  OUTBOUND_RPS = "0.4"          # about one LinkedIn call every 2.5 seconds
+  RATE_LIMIT_PER_MINUTE = "30"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "suspend"
+  auto_start_machines = true
+  min_machines_running = 0      # raise to 1 to keep the session warm
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 20
+    hard_limit = 40
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    timeout = "5s"
+    path = "/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
