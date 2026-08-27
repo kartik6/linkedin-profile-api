@@ -270,6 +270,47 @@ async def post_batch(
     )
 
 
+@app.get(
+    "/api/v1/diagnose",
+    tags=["ops"],
+    summary="Ask LinkedIn directly and report the raw answer",
+)
+async def diagnose(
+    url: str,
+    _: Annotated[str, Depends(require_api_key)],
+) -> dict[str, Any]:
+    """Report what LinkedIn answers for each route this service uses.
+
+    The profile endpoint reports our own error codes, which say what we did
+    about a failure but not what LinkedIn said. This reports the raw status,
+    the redirect target and the first bytes of each body, so an operator can
+    tell a restricted account apart from a retired route.
+    """
+    ref = parse_profile_url(url)
+    client: LinkedInClient = state["client"]
+    identifier = ref.public_identifier
+    targets = [
+        ("me", f"{client.voyager}/me", True),
+        (
+            "voyager_profile_view",
+            f"{client.voyager}/identity/profiles/{identifier}/profileView",
+            True,
+        ),
+        (
+            "voyager_dash",
+            f"{client.voyager}/identity/dash/profiles"
+            f"?q=memberIdentity&memberIdentity={identifier}",
+            True,
+        ),
+        ("profile_page_authenticated", client.page_url(identifier), True),
+        ("profile_page_logged_out", client.page_url(identifier), False),
+    ]
+    probes = {}
+    for name, target, authenticated in targets:
+        probes[name] = await client.probe(target, authenticated=authenticated)
+    return {"public_identifier": identifier, "probes": probes}
+
+
 @app.get("/api/v1/parse", tags=["ops"], summary="Check that we can read a URL")
 async def parse_only(url: str) -> dict[str, Any]:
     """Validate a URL without calling LinkedIn. Free and instant."""

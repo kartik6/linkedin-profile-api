@@ -92,6 +92,7 @@ class LinkedInClient:
         accept: str | None = None,
         referer: str | None = None,
         authenticated: bool = True,
+        follow_redirects: bool = False,
     ) -> httpx.Response:
         session = session or (self.pool.acquire() if authenticated else None)
         attempt = 0
@@ -110,7 +111,12 @@ class LinkedInClient:
 
             try:
                 response = await self._client.request(
-                    method, url, params=params, headers=headers, cookies=cookies
+                    method,
+                    url,
+                    params=params,
+                    headers=headers,
+                    cookies=cookies,
+                    follow_redirects=follow_redirects,
                 )
             except httpx.TimeoutException as exc:
                 last_error = exc
@@ -157,11 +163,17 @@ class LinkedInClient:
         status = response.status_code
         location = response.headers.get("location", "")
 
-        if status in (301, 302, 303, 307, 308):
-            if any(marker in location for marker in _CHALLENGE_MARKERS):
+        # When we follow redirects, the landing URL is what matters. When we do
+        # not, the Location header is. Check both, so a sign in wall is named a
+        # sign in wall either way.
+        final_url = str(response.url)
+        for candidate in (location, final_url):
+            if candidate and any(marker in candidate for marker in _CHALLENGE_MARKERS):
                 raise ChallengeRequired(
-                    f"LinkedIn redirected to a check page: {location}"
+                    f"LinkedIn redirected to a check page: {candidate}"
                 )
+
+        if status in (301, 302, 303, 307, 308):
             return
 
         if status == 401:
@@ -206,10 +218,65 @@ class LinkedInClient:
 
     async def get_html(self, url: str, **kwargs: Any) -> str:
         kwargs.setdefault("accept", "text/html,application/xhtml+xml,application/xml;q=0.9")
+        # LinkedIn redirects page requests often, to add a slash or to set a
+        # routing cookie. Follow them. A redirect is not a missing profile.
+        kwargs.setdefault("follow_redirects", True)
         response = await self.request("GET", url, **kwargs)
-        if response.status_code in (301, 302, 303, 307, 308):
-            raise ProfileNotFound("LinkedIn redirected away from the profile page.")
         return response.text
+
+    async def probe(self, url: str, *, authenticated: bool = True) -> dict[str, Any]:
+        """Make one raw call and report exactly what LinkedIn answered.
+
+        This exists because "profile_not_found" is not a diagnosis. An operator
+        needs the status, the landing URL and the first bytes of the body to
+        tell a restricted account apart from a retired route.
+        """
+        session = self.pool.acquire() if authenticated and self.pool.configured else None
+        headers = (
+            session.headers(accept="application/vnd.linkedin.normalized+json+2.1")
+            if session
+            else {"accept": "text/html,application/xhtml+xml"}
+        )
+        await self.limiter.wait()
+        try:
+            response = await self._client.request(
+                "GET",
+                url,
+                headers=headers,
+                cookies=session.cookies if session else None,
+                follow_redirects=False,
+            )
+        except httpx.HTTPError as exc:
+            return {"url": url, "transport_error": str(exc)}
+
+        body = response.text[:280].replace("\n", " ")
+        return {
+            "url": url,
+            "authenticated": session is not None,
+            "status": response.status_code,
+            "location": response.headers.get("location"),
+            "content_type": response.headers.get("content-type"),
+            "content_length": response.headers.get("content-length"),
+            "body_head": body,
+        }
+
+    @staticmethod
+    def _resolve_me(data: dict[str, Any]) -> dict[str, Any]:
+        """Find our own profile in the /me response.
+
+        Under the normalized accept header the miniProfile arrives as a starred
+        URN reference, not inline, so we resolve it against `included`.
+        """
+        body = data.get("data", {})
+        ref = body.get("*miniProfile") or body.get("miniProfile")
+        included = [e for e in data.get("included", []) if isinstance(e, dict)]
+        if isinstance(ref, dict):
+            return ref
+        if isinstance(ref, str):
+            found = next((e for e in included if e.get("entityUrn") == ref), None)
+            if found:
+                return found
+        return next((e for e in included if e.get("publicIdentifier")), {})
 
     def page_url(self, public_identifier: str) -> str:
         """The profile page URL on the configured origin."""
@@ -221,15 +288,11 @@ class LinkedInClient:
             return {"configured": False, "authenticated": False, "sessions": []}
         try:
             data = await self.get_json("/me")
-            mini = data.get("data", data).get("miniProfile", {})
-            if isinstance(mini, str):
-                mini = next(
-                    (e for e in data.get("included", []) if e.get("entityUrn") == mini), {}
-                )
+            entity = self._resolve_me(data)
             return {
                 "configured": True,
                 "authenticated": True,
-                "logged_in_as": mini.get("publicIdentifier"),
+                "logged_in_as": entity.get("publicIdentifier"),
                 "sessions": self.pool.status(),
             }
         except LinkedInAPIError as exc:

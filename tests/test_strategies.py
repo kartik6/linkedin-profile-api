@@ -175,3 +175,66 @@ class TestPublicJSONLD:
         respx.get(PAGE_URL).mock(return_value=httpx.Response(200, html="<html></html>"))
         with pytest.raises(ProfileNotFound):
             await PublicJSONLDStrategy().fetch(client, ref)
+
+
+class TestSessionCheck:
+    """The /me response shape decides whether an operator sees a useful answer."""
+
+    def test_resolves_a_starred_reference(self, settings):
+        client = LinkedInClient(settings)
+        entity = client._resolve_me(
+            {
+                "data": {"*miniProfile": "urn:li:fs_miniProfile:ACoAA"},
+                "included": [
+                    {"entityUrn": "urn:li:fs_miniProfile:ACoAA", "publicIdentifier": "adalovelace"}
+                ],
+            }
+        )
+        assert entity["publicIdentifier"] == "adalovelace"
+
+    def test_resolves_an_inline_object(self, settings):
+        client = LinkedInClient(settings)
+        entity = client._resolve_me(
+            {"data": {"miniProfile": {"publicIdentifier": "adalovelace"}}}
+        )
+        assert entity["publicIdentifier"] == "adalovelace"
+
+    def test_falls_back_to_any_entity_with_an_identifier(self, settings):
+        client = LinkedInClient(settings)
+        entity = client._resolve_me(
+            {"data": {}, "included": [{"publicIdentifier": "adalovelace"}]}
+        )
+        assert entity["publicIdentifier"] == "adalovelace"
+
+    def test_missing_data_returns_empty(self, settings):
+        assert LinkedInClient(settings)._resolve_me({}) == {}
+
+
+class TestRedirects:
+    @respx.mock
+    async def test_a_plain_redirect_is_followed_not_treated_as_missing(
+        self, client, ref, profile_page
+    ):
+        respx.get(PAGE_URL).mock(
+            return_value=httpx.Response(
+                302, headers={"location": "https://www.linkedin.com/in/adalovelace"}
+            )
+        )
+        respx.get("https://www.linkedin.com/in/adalovelace").mock(
+            return_value=httpx.Response(200, html=profile_page)
+        )
+        result = await EmbeddedJSONStrategy().fetch(client, ref)
+        assert result.profile.full_name == "Ada Lovelace"
+
+    @respx.mock
+    async def test_landing_on_a_checkpoint_is_still_a_challenge(self, client, ref):
+        """We follow the redirect, so the landing URL is what condemns it."""
+        checkpoint = "https://www.linkedin.com/checkpoint/challenge/y"
+        respx.get(PAGE_URL).mock(
+            return_value=httpx.Response(302, headers={"location": checkpoint})
+        )
+        respx.get(checkpoint).mock(
+            return_value=httpx.Response(200, html="<html>Verify you are a human</html>")
+        )
+        with pytest.raises(ChallengeRequired):
+            await EmbeddedJSONStrategy().fetch(client, ref)
