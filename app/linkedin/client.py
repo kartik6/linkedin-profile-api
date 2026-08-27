@@ -39,6 +39,10 @@ DEFAULT_BASE_URL = "https://www.linkedin.com"
 # Paths LinkedIn redirects to when it wants a human.
 _CHALLENGE_MARKERS = ("/checkpoint/", "/authwall", "/uas/login", "/login")
 
+# Browser identity and routing cookies. LinkedIn hands these out on a plain
+# page load, and expects to see them on later API calls.
+_BROWSER_COOKIES = ("bcookie", "bscookie", "lidc", "rtc", "trkCode", "trkInfo", "li_gc")
+
 
 class RateLimiter:
     """A token bucket shared by every caller in the process."""
@@ -85,6 +89,59 @@ class LinkedInClient:
         await self._anon.aclose()
         await self.pool.aclose()
 
+    # -- warm up -----------------------------------------------------------
+
+    async def _ensure_warm(self, session: LinkedInSession) -> None:
+        """Collect LinkedIn's browser identity cookies before the first API call.
+
+        A browser never starts at an API endpoint. It loads linkedin.com, is
+        handed `bcookie`, `bscookie` and `lidc`, and only then does the page
+        make Voyager calls.
+
+        Our client used to go straight to the API with nothing but `li_at`.
+        LinkedIn answered every request with a 302 back to the same URL, while
+        re-issuing `li_at`, `li_a` and `liap`. That is session establishment,
+        not session use: it was trying to give us an identity we never came
+        back with. The result was an endless redirect loop.
+
+        So we do what the browser does. One unauthenticated page load, then
+        copy the cookies it gave us into the session jar.
+        """
+        if session.warmed:
+            return
+        session.warmed = True  # set first, so a failure does not retry forever
+
+        try:
+            await self.limiter.wait()
+            response = await self._anon.request(
+                "GET",
+                f"{self.base_url}/",
+                headers={
+                    "accept": "text/html,application/xhtml+xml,application/xml;q=0.9",
+                    "accept-language": "en-US,en;q=0.9",
+                },
+            )
+        except httpx.HTTPError as exc:
+            log.warning("Warm up request failed for %s: %s", session.label, exc)
+            return
+
+        transport = session.client(
+            user_agent=self.settings.user_agent,
+            timeout=self.settings.request_timeout_s,
+        )
+        copied = []
+        for name in _BROWSER_COOKIES:
+            value = self._anon.cookies.get(name)
+            if value:
+                transport.cookies.set(name, value, domain=".linkedin.com", path="/")
+                copied.append(name)
+        log.info(
+            "Warmed session %s from %s: copied %s",
+            session.label,
+            response.status_code,
+            copied or "nothing",
+        )
+
     # -- core --------------------------------------------------------------
 
     async def request(
@@ -99,6 +156,8 @@ class LinkedInClient:
         authenticated: bool = True,
     ) -> httpx.Response:
         session = session or (self.pool.acquire() if authenticated else None)
+        if session is not None:
+            await self._ensure_warm(session)
         attempt = 0
         last_error: Exception | None = None
 

@@ -62,6 +62,7 @@ class LinkedInSession:
     quarantined_until: float = 0.0
     last_used: float = 0.0
     requests: int = 0
+    warmed: bool = False
     _client: httpx.AsyncClient | None = field(default=None, repr=False)
 
     @property
@@ -170,6 +171,7 @@ class LinkedInSession:
         return {
             "label": self.label,
             "cookies_held": sorted(jar.keys()) if jar else [],
+            "warmed": self.warmed,
             "healthy": self.healthy,
             "failures": self.failures,
             "requests": self.requests,

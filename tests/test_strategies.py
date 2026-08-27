@@ -28,6 +28,21 @@ TOP_CARD_URL = f"{BASE}/identity/dash/profiles"
 
 @pytest.fixture
 async def client(settings):
+    """A client whose sessions are already warmed.
+
+    Warm up is tested on its own in TestWarmUp. Most tests are about what
+    happens after it, so marking the session warmed keeps them focused.
+    """
+    c = LinkedInClient(settings)
+    for session in c.pool.sessions:
+        session.warmed = True
+    yield c
+    await c.aclose()
+
+
+@pytest.fixture
+async def cold_client(settings):
+    """A client that has not warmed up yet."""
     c = LinkedInClient(settings)
     yield c
     await c.aclose()
@@ -252,3 +267,85 @@ class TestVoyagerHeaders:
         assert 'JSESSIONID="ajax:1234567890123456789"' in request.headers["cookie"]
         assert "li_at=fake-li-at-cookie" in request.headers["cookie"]
         assert request.headers["x-restli-protocol-version"] == "2.0.0"
+
+
+class TestWarmUp:
+    """Collect LinkedIn's browser identity cookies before the first API call.
+
+    Observed in production: a client that goes straight to a Voyager endpoint
+    with only `li_at` gets a 302 back to the same URL, with LinkedIn re-issuing
+    `li_at`, `li_a` and `liap` on every hop. That is session establishment, and
+    it never terminates, because we never come back holding what it issued.
+
+    A browser loads linkedin.com first and is handed `bcookie`, `bscookie` and
+    `lidc`. We do the same.
+    """
+
+    @respx.mock
+    async def test_loads_the_home_page_before_the_first_api_call(
+        self, cold_client, ref, top_card, sections
+    ):
+        home = respx.get("https://www.linkedin.com/").mock(
+            return_value=httpx.Response(
+                200,
+                html="<html></html>",
+                headers=[
+                    ("set-cookie", "bcookie=v=2&abc; Domain=.linkedin.com; Path=/"),
+                    ("set-cookie", "lidc=b=OB1; Domain=.linkedin.com; Path=/"),
+                ],
+            )
+        )
+        mock_all(top_card, sections)
+
+        await VoyagerDashStrategy().fetch(cold_client, ref)
+        assert home.called
+
+    @respx.mock
+    async def test_copies_the_browser_cookies_into_the_session_jar(
+        self, cold_client, ref, top_card, sections
+    ):
+        respx.get("https://www.linkedin.com/").mock(
+            return_value=httpx.Response(
+                200,
+                html="<html></html>",
+                headers=[
+                    ("set-cookie", "bcookie=v=2&abc; Domain=.linkedin.com; Path=/"),
+                    ("set-cookie", "bscookie=v=1&xyz; Domain=.linkedin.com; Path=/"),
+                    ("set-cookie", "lidc=b=OB1; Domain=.linkedin.com; Path=/"),
+                ],
+            )
+        )
+        mock_all(top_card, sections)
+
+        await VoyagerDashStrategy().fetch(cold_client, ref)
+
+        held = cold_client.pool.sessions[0].status()["cookies_held"]
+        assert "bcookie" in held
+        assert "bscookie" in held
+        assert "lidc" in held
+        assert "li_at" in held
+
+    @respx.mock
+    async def test_it_happens_only_once_per_session(
+        self, cold_client, ref, top_card, sections
+    ):
+        home = respx.get("https://www.linkedin.com/").mock(
+            return_value=httpx.Response(200, html="<html></html>")
+        )
+        mock_all(top_card, sections)
+
+        await VoyagerDashStrategy().fetch(cold_client, ref)
+        await VoyagerDashStrategy().fetch(cold_client, ref)
+
+        assert home.call_count == 1, "warm up must not repeat on every request"
+
+    @respx.mock
+    async def test_a_failed_warm_up_does_not_block_the_request(
+        self, cold_client, ref, top_card, sections
+    ):
+        """The warm up is an optimisation, not a precondition."""
+        respx.get("https://www.linkedin.com/").mock(side_effect=httpx.ConnectError("down"))
+        mock_all(top_card, sections)
+
+        result = await VoyagerDashStrategy().fetch(cold_client, ref)
+        assert result.profile.full_name == "Ada Lovelace"
