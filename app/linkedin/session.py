@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 import httpx
 
 from app.config import Settings
-from app.errors import ChallengeRequired, NoSessionConfigured
+from app.errors import AuthenticationFailed, ChallengeRequired, NoSessionConfigured
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +33,28 @@ _JSESSIONID_RE = re.compile(r'"?(ajax:\d+)"?')
 
 # Paths LinkedIn redirects to when it wants a human rather than a client.
 _CHALLENGE_MARKERS = ("/checkpoint/", "/authwall", "/uas/login", "/login")
+
+
+def _deletes_session_cookie(response: httpx.Response) -> bool:
+    """True when LinkedIn is deleting our session cookie rather than setting one.
+
+    A server deletes a cookie by re-sending it with an expiry in the past:
+
+        Set-Cookie: li_at=...; Expires=Thu, 01-Jan-1970 00:00:00 GMT; Max-Age=0
+
+    Observed live on every route at once, for li_at, li_a and liap together,
+    paired with a 302 back to the same URL. That is a logout instruction.
+    """
+    for key, value in response.headers.multi_items():
+        if key.lower() != "set-cookie":
+            continue
+        name = value.split("=", 1)[0].strip().lower()
+        if name not in ("li_at", "li_a"):
+            continue
+        lowered = value.lower()
+        if "max-age=0" in lowered or "expires=thu, 01-jan-1970" in lowered:
+            return True
+    return False
 
 
 async def _watch_redirects(response: httpx.Response) -> None:
@@ -45,6 +67,15 @@ async def _watch_redirects(response: httpx.Response) -> None:
 
     Reading the Location header here catches it either way.
     """
+    if _deletes_session_cookie(response):
+        # Stop here. Following the redirect just presents the same dead token
+        # again, so the client would loop to the redirect limit and report a
+        # transport error instead of the truth.
+        raise AuthenticationFailed(
+            "LinkedIn deleted the session cookie. The li_at value is no longer "
+            "valid, so it must be replaced."
+        )
+
     location = response.headers.get("location", "")
     if location and any(marker in location for marker in _CHALLENGE_MARKERS):
         raise ChallengeRequired(f"LinkedIn redirected to a check page: {location}")

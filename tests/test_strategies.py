@@ -419,3 +419,66 @@ class TestDuplicateCookies:
             header = call.request.headers.get("cookie", "")
             names = [p.split("=", 1)[0].strip() for p in header.split(";") if p.strip()]
             assert names.count("li_at") <= 1, f"two session tokens went out: {header}"
+
+
+class TestSessionRevoked:
+    """LinkedIn deletes the session cookie when the token is no longer valid.
+
+    Observed live: every route answered 302 back to its own URL while sending
+    `Set-Cookie: li_at=...; Expires=Thu, 01-Jan-1970 00:00:00 GMT; Max-Age=0`
+    for li_at, li_a and liap together. An expiry in the past is a deletion, not
+    an assignment.
+
+    Following that redirect just presents the same dead token again, so the
+    client looped to the redirect limit and reported a generic transport error.
+    The operator needs to be told to replace the cookie.
+    """
+
+    EXPIRED = (
+        "li_at=x; Version=1; Path=/; Domain=.www.linkedin.com; "
+        "Expires=Thu, 01-Jan-1970 00:00:00 GMT; Max-Age=0; Secure; SameSite=None; HttpOnly"
+    )
+
+    @respx.mock
+    async def test_a_deleted_session_cookie_is_named_not_followed(self, client, ref):
+        route = respx.get(TOP_CARD_URL).mock(
+            return_value=httpx.Response(
+                302,
+                headers=[("location", TOP_CARD_URL), ("set-cookie", self.EXPIRED)],
+            )
+        )
+        with pytest.raises(AuthenticationFailed, match="no longer"):
+            await VoyagerDashStrategy().fetch(client, ref)
+        assert route.call_count == 1, "must not loop on a revoked session"
+
+    @respx.mock
+    async def test_it_quarantines_the_session(self, client, ref):
+        respx.get(TOP_CARD_URL).mock(
+            return_value=httpx.Response(
+                302, headers=[("location", TOP_CARD_URL), ("set-cookie", self.EXPIRED)]
+            )
+        )
+        with pytest.raises(AuthenticationFailed):
+            await VoyagerDashStrategy().fetch(client, ref)
+        assert client.pool.sessions[0].healthy is False
+
+    @respx.mock
+    async def test_a_normal_cookie_refresh_is_not_mistaken_for_a_logout(
+        self, client, ref, top_card, sections
+    ):
+        """A future expiry is a real assignment and must pass through."""
+        respx.get(TOP_CARD_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json=top_card,
+                headers=[
+                    ("set-cookie", "li_at=fresh; Path=/; Expires=Thu, 01-Jan-2099 00:00:00 GMT")
+                ],
+            )
+        )
+        for name in SECTION_ROUTES:
+            respx.get(f"{BASE}/identity/dash/{name}").mock(
+                return_value=httpx.Response(200, json=sections.get(name, {"included": []}))
+            )
+        result = await VoyagerDashStrategy().fetch(client, ref)
+        assert result.profile.full_name == "Ada Lovelace"

@@ -190,9 +190,10 @@ class LinkedInClient:
                 response = await transport.request(
                     method, url, params=params, headers=headers
                 )
-            except ChallengeRequired:
-                # Raised by the session's redirect hook. The cookie is not dead,
-                # but this session needs a human before it works again.
+            except (ChallengeRequired, AuthenticationFailed):
+                # Raised by the session's response hook, before any redirect is
+                # followed. Either way this session is unusable until a human
+                # acts, so quarantine it rather than burning requests.
                 if session:
                     session.mark_failure(hard=True)
                 raise
