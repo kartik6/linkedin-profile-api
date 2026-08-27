@@ -451,9 +451,13 @@ and switches the other three strategies on.
 Fly terminates TLS, so HTTPS works with no extra work. `force_https = true` in
 `fly.toml` redirects plain HTTP.
 
-Edit `primary_region` in `fly.toml` before the first deploy. Put it in the same
-country as the LinkedIn account. `bom` is Mumbai. `iad` is Virginia. `lhr` is
-London.
+Edit `primary_region` in `fly.toml` before the first deploy. Put it as close to
+the LinkedIn account as you can. `sin` is Singapore, and it is the nearest live
+region to India. `iad` is Virginia. `lhr` is London.
+
+Fly retires regions. Mumbai, `bom`, no longer accepts new machines. If a deploy
+fails with `Region <x> is deprecated`, run `fly platform regions` and pick
+another one.
 
 The same image runs on Render, Railway or Cloud Run. Only the secret syntax
 changes.

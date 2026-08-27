@@ -8,7 +8,7 @@
 #   fly secrets set LI_AT=... JSESSIONID='ajax:...' API_KEYS=...
 
 app = "linkedin-profile-api"
-primary_region = "bom"          # Mumbai. Move this near your account's country.
+primary_region = "sin"          # Singapore. Move this near your account's country.
 
 [build]
   dockerfile = "Dockerfile"
