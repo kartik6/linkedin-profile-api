@@ -34,6 +34,17 @@ from app.linkedin.session import LinkedInSession, SessionPool, _watch_redirects
 
 log = logging.getLogger(__name__)
 
+
+def _cookie_names(header: str | None) -> list[str]:
+    """Names in the order they were actually sent, duplicates included.
+
+    A dict of jar keys collapses duplicates, which is exactly what we needed
+    to see. This reads the header we really put on the wire.
+    """
+    if not header:
+        return []
+    return [part.split("=", 1)[0].strip() for part in header.split(";") if part.strip()]
+
 DEFAULT_BASE_URL = "https://www.linkedin.com"
 
 # Paths LinkedIn redirects to when it wants a human.
@@ -196,6 +207,11 @@ class LinkedInClient:
                 await self._backoff(attempt)
                 continue
 
+            if session:
+                dropped = session.reconcile_cookies()
+                if dropped:
+                    log.info("Dropped duplicate cookies for %s: %s", session.label, dropped)
+
             try:
                 self._raise_for_linkedin(response)
             except UpstreamRateLimited:
@@ -326,9 +342,7 @@ class LinkedInClient:
             "status": response.status_code,
             "location": response.headers.get("location"),
             "set_cookie": set_cookies,
-            "cookies_sent": sorted(
-                (transport.cookies or {}).keys()
-            ),
+            "cookies_sent": _cookie_names(response.request.headers.get("cookie")),
             "final_url": str(response.url),
             "redirects": len(response.history),
             "chain": [

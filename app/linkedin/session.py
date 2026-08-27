@@ -63,6 +63,7 @@ class LinkedInSession:
     last_used: float = 0.0
     requests: int = 0
     warmed: bool = False
+    duplicates_dropped: int = 0
     _client: httpx.AsyncClient | None = field(default=None, repr=False)
 
     @property
@@ -149,6 +150,53 @@ class LinkedInSession:
             headers["referer"] = referer
         return headers
 
+    def reconcile_cookies(self) -> list[str]:
+        """Keep exactly one entry per cookie name.
+
+        A cookie jar keys entries on (name, domain, path), not on name alone.
+        We seed `li_at` with no explicit domain, so it is stored host-scoped
+        against `www.linkedin.com`. LinkedIn then sets its own `li_at` with a
+        `Domain` attribute. Those are two different entries under the same
+        name, and the jar dutifully sends **both** in one Cookie header.
+
+        LinkedIn sees a request carrying two conflicting session tokens, cannot
+        resolve it, and answers 302 back to the same URL while re-issuing the
+        cookie. We come back with two again. That is the loop.
+
+        It also explains why the very first request always succeeded: at that
+        point there was only one.
+
+        Rule: our configured values are known good, because they came from a
+        real browser login, so they win for the auth cookies. For anything
+        LinkedIn set itself, the most specific domain wins.
+        """
+        if self._client is None:
+            return []
+        jar = self._client.cookies
+        by_name: dict[str, list] = {}
+        for cookie in list(jar.jar):
+            by_name.setdefault(cookie.name, []).append(cookie)
+
+        dropped: list[str] = []
+        for name, entries in by_name.items():
+            if len(entries) < 2:
+                continue
+            if name == "li_at":
+                keep = next((c for c in entries if c.value == self.li_at), entries[-1])
+            elif name == "JSESSIONID":
+                keep = next(
+                    (c for c in entries if self.csrf_token in (c.value or "")), entries[-1]
+                )
+            else:
+                keep = max(entries, key=lambda c: len(c.domain or ""))
+            for cookie in entries:
+                if cookie is not keep:
+                    jar.jar.clear(cookie.domain, cookie.path, cookie.name)
+                    dropped.append(f"{name}@{cookie.domain or 'host'}")
+        if dropped:
+            self.duplicates_dropped += len(dropped)
+        return dropped
+
     def mark_success(self) -> None:
         self.failures = 0
         self.quarantined_until = 0.0
@@ -172,6 +220,7 @@ class LinkedInSession:
             "label": self.label,
             "cookies_held": sorted(jar.keys()) if jar else [],
             "warmed": self.warmed,
+            "duplicate_cookies_dropped": self.duplicates_dropped,
             "healthy": self.healthy,
             "failures": self.failures,
             "requests": self.requests,

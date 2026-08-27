@@ -349,3 +349,73 @@ class TestWarmUp:
 
         result = await VoyagerDashStrategy().fetch(cold_client, ref)
         assert result.profile.full_name == "Ada Lovelace"
+
+
+class TestDuplicateCookies:
+    """A jar keys on (name, domain, path), so one name can be stored twice.
+
+    We seed `li_at` host-scoped. LinkedIn sets its own with a Domain attribute.
+    Both then go out in a single Cookie header, LinkedIn sees two conflicting
+    session tokens, and answers 302 back to the same URL while re-issuing the
+    cookie. That is an infinite loop, and it explains why only the very first
+    request ever succeeded.
+    """
+
+    async def test_a_second_li_at_is_dropped_and_ours_survives(self, settings):
+        client = LinkedInClient(settings)
+        try:
+            session = client.pool.sessions[0]
+            jar = session.client(
+                user_agent=settings.user_agent, timeout=settings.request_timeout_s
+            ).cookies
+            # LinkedIn re-issuing li_at under a different domain scope.
+            jar.set("li_at", "linkedin-reissued-value", domain=".www.linkedin.com", path="/")
+            assert len([c for c in jar.jar if c.name == "li_at"]) == 2
+
+            dropped = session.reconcile_cookies()
+
+            surviving = [c for c in jar.jar if c.name == "li_at"]
+            assert len(surviving) == 1
+            assert surviving[0].value == "fake-li-at-cookie"
+            assert dropped
+        finally:
+            await client.aclose()
+
+    async def test_non_auth_cookies_keep_the_most_specific_domain(self, settings):
+        client = LinkedInClient(settings)
+        try:
+            session = client.pool.sessions[0]
+            jar = session.client(
+                user_agent=settings.user_agent, timeout=settings.request_timeout_s
+            ).cookies
+            jar.set("lidc", "old", domain="linkedin.com", path="/")
+            jar.set("lidc", "new", domain=".www.linkedin.com", path="/")
+
+            session.reconcile_cookies()
+
+            surviving = [c for c in jar.jar if c.name == "lidc"]
+            assert len(surviving) == 1
+            assert surviving[0].value == "new"
+        finally:
+            await client.aclose()
+
+    @respx.mock
+    async def test_only_one_li_at_reaches_the_wire(self, client, ref, top_card, sections):
+        route = respx.get(TOP_CARD_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json=top_card,
+                headers={"set-cookie": "li_at=reissued; Domain=.www.linkedin.com; Path=/"},
+            )
+        )
+        for name in SECTION_ROUTES:
+            respx.get(f"{BASE}/identity/dash/{name}").mock(
+                return_value=httpx.Response(200, json=sections.get(name, {"included": []}))
+            )
+
+        await VoyagerDashStrategy().fetch(client, ref)
+
+        for call in route.calls:
+            header = call.request.headers.get("cookie", "")
+            names = [p.split("=", 1)[0].strip() for p in header.split(";") if p.strip()]
+            assert names.count("li_at") <= 1, f"two session tokens went out: {header}"
