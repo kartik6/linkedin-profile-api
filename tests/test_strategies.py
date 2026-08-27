@@ -268,6 +268,28 @@ class TestVoyagerHeaders:
         assert "li_at=fake-li-at-cookie" in request.headers["cookie"]
         assert request.headers["x-restli-protocol-version"] == "2.0.0"
 
+    @respx.mock
+    async def test_sends_no_invented_client_identity(self, client, ref, top_card):
+        """Never claim to be a client we are not.
+
+        We used to send x-li-track announcing mpName voyager-web at version
+        1.13.27340. Both were invented. LinkedIn's real client calls itself
+        flagship-web 0.2.6975, so every request advertised a version that does
+        not exist. A live session was revoked after three such calls.
+
+        Announcing a nonexistent client is louder than announcing nothing.
+        """
+        route = respx.get(TOP_CARD_URL).mock(return_value=httpx.Response(200, json=top_card))
+        for name in SECTION_ROUTES:
+            respx.get(f"{BASE}/identity/dash/{name}").mock(
+                return_value=httpx.Response(200, json={"included": []})
+            )
+        await VoyagerDashStrategy().fetch(client, ref)
+
+        sent = {k.lower() for k in route.calls[0].request.headers}
+        for invented in ("x-li-track", "x-li-page-instance", "sec-ch-ua", "x-li-lang"):
+            assert invented not in sent, f"{invented} was fabricated and must not be sent"
+
 
 class TestWarmUp:
     """Collect LinkedIn's browser identity cookies before the first API call.

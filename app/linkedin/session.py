@@ -15,7 +15,6 @@ whole service.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import time
@@ -148,34 +147,39 @@ class LinkedInSession:
             self._client = None
 
     def headers(self, *, referer: str | None = None, accept: str | None = None) -> dict[str, str]:
-        track = {
-            "clientVersion": "1.13.27340",
-            "mpVersion": "1.13.27340",
-            "osName": "web",
-            "timezoneOffset": 5.5,
-            "timezone": "Asia/Kolkata",
-            "deviceFormFactor": "DESKTOP",
-            "mpName": "voyager-web",
-            "displayDensity": 2,
-            "displayWidth": 2560,
-            "displayHeight": 1440,
-        }
+        """Send only the headers we proved Voyager requires.
+
+        This list is short on purpose, and the reason matters.
+
+        The requests that demonstrably worked were `fetch()` calls made from
+        the browser console. Those sent three headers of their own:
+
+            csrf-token
+            accept
+            x-restli-protocol-version
+
+        plus whatever the browser adds: user-agent, cookie, referer.
+
+        Earlier versions of this file also sent `x-li-track`, announcing
+        `mpName: voyager-web` and `clientVersion: 1.13.27340`. Both values were
+        invented. The captured page shows LinkedIn's real client identifies
+        itself as `flagship-web` version `0.2.6975`.
+
+        So every request was claiming to be a client version that no longer
+        exists, alongside a fabricated `x-li-page-instance` and made up
+        `sec-ch-ua` hints. Announcing a nonexistent client is a far louder
+        signal than announcing nothing, and we watched LinkedIn revoke a live
+        session after three calls carrying them.
+
+        The rule here: send what is required, never invent what is optional.
+        If a header is ever added back, it must come from an observed request,
+        not from a plausible guess.
+        """
         headers = {
             "accept": accept or "application/vnd.linkedin.normalized+json+2.1",
             "accept-language": "en-US,en;q=0.9",
             "csrf-token": self.csrf_token,
             "x-restli-protocol-version": "2.0.0",
-            "x-li-lang": "en_US",
-            "x-li-track": json.dumps(track, separators=(",", ":")),
-            "x-li-page-instance": (
-                f"urn:li:page:d_flagship3_profile_view_base;{uuid.uuid4()}"
-            ),
-            "sec-ch-ua": '"Chromium";v="131", "Not_A Brand";v="24"',
-            "sec-ch-ua-mobile": "?0",
-            "sec-ch-ua-platform": '"macOS"',
-            "sec-fetch-dest": "empty",
-            "sec-fetch-mode": "cors",
-            "sec-fetch-site": "same-origin",
         }
         if referer:
             headers["referer"] = referer
