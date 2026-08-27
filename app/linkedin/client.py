@@ -224,7 +224,9 @@ class LinkedInClient:
         response = await self.request("GET", url, **kwargs)
         return response.text
 
-    async def probe(self, url: str, *, authenticated: bool = True) -> dict[str, Any]:
+    async def probe(
+        self, url: str, *, authenticated: bool = True, follow: bool = False
+    ) -> dict[str, Any]:
         """Make one raw call and report exactly what LinkedIn answered.
 
         This exists because "profile_not_found" is not a diagnosis. An operator
@@ -247,17 +249,33 @@ class LinkedInClient:
         )
         await self.limiter.wait()
         try:
-            response = await transport.request("GET", url, headers=headers)
+            response = await transport.request(
+                "GET", url, headers=headers, follow_redirects=follow
+            )
         except httpx.HTTPError as exc:
             return {"url": url, "transport_error": str(exc)}
 
         body = response.text[:280].replace("\n", " ")
+        set_cookies = [
+            value.split("=", 1)[0]
+            for key, value in response.headers.multi_items()
+            if key.lower() == "set-cookie"
+        ]
         return {
             "url": url,
             "authenticated": session is not None,
             "status": response.status_code,
+            "location": response.headers.get("location"),
+            "set_cookie": set_cookies,
+            "cookies_sent": sorted(
+                (transport.cookies or {}).keys()
+            ),
             "final_url": str(response.url),
             "redirects": len(response.history),
+            "chain": [
+                {"status": r.status_code, "location": r.headers.get("location")}
+                for r in response.history
+            ],
             "content_type": response.headers.get("content-type"),
             "content_length": response.headers.get("content-length"),
             "body_head": body,

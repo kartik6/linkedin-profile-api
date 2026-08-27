@@ -308,7 +308,14 @@ async def diagnose(
     ]
     probes = {}
     for name, target, authenticated in targets:
-        probes[name] = await client.probe(target, authenticated=authenticated)
+        raw = await client.probe(target, authenticated=authenticated, follow=False)
+        # A raw probe reports the first hop verbatim. Following as well shows
+        # whether the redirect chain terminates, and where.
+        if raw.get("status") in (301, 302, 303, 307, 308):
+            raw["followed"] = await client.probe(
+                target, authenticated=authenticated, follow=True
+            )
+        probes[name] = raw
     return {"public_identifier": identifier, "probes": probes}
 
 

@@ -101,7 +101,7 @@ class LinkedInSession:
             self._client = httpx.AsyncClient(
                 timeout=httpx.Timeout(timeout),
                 follow_redirects=True,
-                max_redirects=5,
+                max_redirects=10,
                 headers={"user-agent": user_agent},
                 cookies=self.cookies,
                 http2=True,
