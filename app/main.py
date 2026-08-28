@@ -19,7 +19,7 @@ from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from app.cache import build_cache, profile_key
@@ -84,6 +84,7 @@ app = FastAPI(
     ),
     docs_url="/docs",
     redoc_url="/redoc",
+    swagger_ui_parameters={"favicon": "/favicon.svg"},
     openapi_tags=[
         {"name": "profile", "description": "Read one profile or a small batch."},
         {"name": "ops", "description": "Health, session state and cache state."},
@@ -158,6 +159,26 @@ async def index() -> HTMLResponse:
     no CORS handling and no second deployment.
     """
     return HTMLResponse((STATIC / "index.html").read_text(encoding="utf-8"))
+
+
+@app.get("/favicon.svg", include_in_schema=False)
+async def favicon() -> Response:
+    """Also served as a file, because /docs and /redoc cannot use a data URI."""
+    return Response(
+        (STATIC / "favicon.svg").read_text(encoding="utf-8"),
+        media_type="image/svg+xml",
+        headers={"cache-control": "public, max-age=86400"},
+    )
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon_ico() -> Response:
+    """Browsers ask for this unprompted. Answer once rather than log a 404."""
+    return Response(
+        (STATIC / "favicon.svg").read_text(encoding="utf-8"),
+        media_type="image/svg+xml",
+        headers={"cache-control": "public, max-age=86400"},
+    )
 
 
 @app.get("/health", tags=["ops"], summary="Liveness probe")

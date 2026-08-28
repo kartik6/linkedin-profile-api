@@ -241,3 +241,15 @@ class TestConsole:
         body = client.get("/").text
         assert "'/api/v1/profile?url='" in body
         assert "http://localhost" not in body
+
+    def test_favicon_is_served_both_ways(self, client):
+        """Browsers request /favicon.ico unprompted, and /docs cannot use a
+        data URI, so the file is served as well as inlined."""
+        for path in ("/favicon.svg", "/favicon.ico"):
+            response = client.get(path)
+            assert response.status_code == 200
+            assert response.headers["content-type"] == "image/svg+xml"
+
+    def test_the_page_inlines_its_icon(self, client):
+        """Inlined so the tab icon needs no second request."""
+        assert "data:image/svg+xml" in client.get("/").text
