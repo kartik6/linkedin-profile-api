@@ -255,11 +255,11 @@ footer a:hover{color:var(--signal);text-decoration-color:var(--signal)}
       <button class="mini" id="copycurl">Copy</button>
     </div>
     <dl class="readout" id="meta">
-      <div class="cell"><dt>Strategy</dt><dd id="m-strat">—</dd></div>
       <div class="cell"><dt>Completeness</dt><dd id="m-comp">—</dd>
         <div class="meter"><i id="m-bar" style="width:0"></i></div></div>
       <div class="cell"><dt>Elapsed</dt><dd id="m-ms">—</dd></div>
       <div class="cell"><dt>Source</dt><dd id="m-cache">—</dd></div>
+      <div class="cell"><dt>Sections</dt><dd id="m-secs">—</dd></div>
     </dl>
   </div>
 
@@ -401,11 +401,12 @@ footer a:hover{color:var(--signal);text-decoration-color:var(--signal)}
   function showResult(body){
     data=body;
     const p=body.profile||{}, m=body.meta||{};
-    $('m-strat').textContent = m.strategy || '—';
     $('m-comp').textContent  = m.completeness!=null ? Math.round(m.completeness*100)+'%' : '—';
     $('m-bar').style.width   = ((m.completeness||0)*100)+'%';
     $('m-ms').textContent    = m.duration_ms!=null ? m.duration_ms+' ms' : '—';
     $('m-cache').textContent = m.cached ? 'cache' : 'linkedin';
+    const filled = SECTIONS.filter(n => Array.isArray(p[n]) && p[n].length).length;
+    $('m-secs').textContent = filled + '/' + SECTIONS.length;
     meta.classList.add('on');
 
     const failed = new Set();

@@ -45,9 +45,9 @@ class Settings(BaseSettings):
 
     # --- pacing. These protect the LinkedIn account, not our server. ---
     outbound_rps: float = Field(
-        default=0.5, description="Requests per second toward LinkedIn, across all callers."
+        default=1.0, description="Requests per second toward LinkedIn, across all callers."
     )
-    outbound_jitter_ms: int = 1200
+    outbound_jitter_ms: int = 600
     request_timeout_s: float = 20.0
     max_retries: int = 3
 
@@ -66,25 +66,17 @@ class Settings(BaseSettings):
         default_factory=lambda: ["voyager_dash"]
     )
 
-    # Which profile sections to fetch. Each one costs a request to LinkedIn.
+    # Which profile sections to fetch. Empty means all of them.
     #
-    # This default is deliberately short. Fetching all thirteen fires fourteen
-    # API calls in a burst, which is a pattern no human browsing produces. We
-    # watched LinkedIn revoke a freshly issued session part way through exactly
-    # that burst, twice. Five calls covers the sections almost every profile
-    # actually has.
+    # This was briefly trimmed to five, on the theory that firing fourteen
+    # calls in a burst was what made LinkedIn revoke our session. That theory
+    # was wrong: the cause was a missing `liap` cookie. Trimming removed real
+    # data, silently, for no benefit, so the default is everything again.
     #
-    # Set SECTIONS to a longer comma separated list to fetch more, at the cost
-    # of a higher chance the session is killed.
-    sections: Annotated[list[str], NoDecode] = Field(
-        default_factory=lambda: [
-            "profilePositions",
-            "profileEducations",
-            "profileSkills",
-            "profileCertifications",
-            "profileLanguages",
-        ]
-    )
+    # Set SECTIONS to a comma separated list to fetch fewer. Anything left out
+    # is named in `meta.warnings`, so an absent section is never mistaken for a
+    # person who has none.
+    sections: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
     @field_validator("api_keys", "li_at_pool", "strategies", "sections", mode="before")
     @classmethod

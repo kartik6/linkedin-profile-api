@@ -563,3 +563,48 @@ class TestSessionRevoked:
             )
         result = await VoyagerDashStrategy().fetch(client, ref)
         assert result.profile.full_name == "Ada Lovelace"
+
+
+class TestSectionCoverage:
+    """A section we never asked for must not look like a section the person lacks."""
+
+    @respx.mock
+    async def test_every_section_is_fetched_by_default(
+        self, client, ref, top_card, sections
+    ):
+        mock_all(top_card, sections)
+        routes = {
+            name: respx.get(f"{BASE}/identity/dash/{name}").mock(
+                return_value=httpx.Response(200, json=sections.get(name, {"included": []}))
+            )
+            for name in SECTION_ROUTES
+        }
+        await VoyagerDashStrategy().fetch(client, ref)
+        missed = [name for name, route in routes.items() if not route.called]
+        assert not missed, f"these sections were never requested: {missed}"
+
+    @respx.mock
+    async def test_projects_reach_the_profile(self, client, ref, top_card, sections):
+        """Regression: profileProjects was dropped from the default list, so a
+        real project silently never appeared in the response."""
+        mock_all(top_card, sections)
+        result = await VoyagerDashStrategy().fetch(client, ref)
+        assert result.profile.projects
+
+    @respx.mock
+    async def test_a_trimmed_list_says_what_it_left_out(
+        self, settings, ref, top_card, sections
+    ):
+        settings.sections = ["profilePositions"]
+        client = LinkedInClient(settings)
+        for session in client.pool.sessions:
+            session.warmed = True
+        try:
+            mock_all(top_card, sections)
+            result = await VoyagerDashStrategy().fetch(client, ref)
+            note = " ".join(result.warnings)
+            assert "not fetched" in note
+            assert "profileProjects" in note
+            assert "profilePositions" not in note
+        finally:
+            await client.aclose()

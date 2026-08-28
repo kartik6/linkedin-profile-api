@@ -469,20 +469,22 @@ fly secrets set LI_AT_POOL='cookieA:ajax:111,cookieB:ajax:222'  # several accoun
 | Variable | Default | Notes |
 |---|---|---|
 | `OUTBOUND_RPS` | `1.0` | Calls per second toward LinkedIn, all callers combined |
-| `SECTIONS` | all | Comma separated. Fewer sections means fewer calls per profile |
+| `SECTIONS` | all 13 | Comma separated. Fewer sections means fewer calls per profile. Anything left out is named in `meta.warnings`. |
 | `CACHE_TTL_S` | `3600` | Longer means fewer LinkedIn calls |
 | `RATE_LIMIT_PER_MINUTE` | `30` | Per caller limit on our own API |
 | `REDIS_URL` | unset | Share the cache across instances |
 
-A full profile costs **1 + 13 calls**. At `OUTBOUND_RPS=1.0` that is about 14
-seconds. Trim `SECTIONS` to the ones you need if that is too slow.
+A full profile costs **1 + 13 calls**, about 15 to 20 seconds at the default
+rate. Trim `SECTIONS` if that is too slow. Anything you leave out is reported
+in `meta.warnings`, so an absent section is never mistaken for a person who
+has none.
 
 ---
 
 ## Tests
 
 ```bash
-make test     # 109 tests, no credentials needed
+make test     # 118 tests, no credentials needed
 make lint
 make e2e      # the whole stack against a mock LinkedIn, 5 failure modes
 ```
@@ -584,8 +586,9 @@ with no lookup table, so `employment_type` is always `null`.
 
 **Follower and connection counts are absent** from the routes we verified.
 
-**14 calls per profile.** One top card plus 13 sections. That is slow and it is
-the main risk to the account. Trim `SECTIONS`.
+**14 calls per profile.** One top card plus 13 sections, so a cold fetch takes
+15 to 20 seconds. Cached repeats are instant. Trim `SECTIONS` if you need it
+faster and can live with less.
 
 **One machine only.** The rate limiter and cache are per process. Two instances
 double the real outbound rate. Redis shares the cache but not the limiter.

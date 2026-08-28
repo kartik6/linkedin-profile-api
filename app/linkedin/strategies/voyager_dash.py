@@ -124,6 +124,16 @@ class VoyagerDashStrategy(Strategy):
         wanted = client.settings.sections or list(SECTION_ROUTES)
         warnings: list[str] = []
 
+        # An empty section normally means the person has none. A section we
+        # never asked for also comes back empty, and the two are
+        # indistinguishable in the response unless we say so here.
+        skipped = [route for route in SECTION_ROUTES if route not in wanted]
+        if skipped:
+            warnings.append(
+                "These sections were not fetched, so their absence says nothing "
+                "about the profile: " + ", ".join(skipped) + "."
+            )
+
         async def one(route: str) -> tuple[str, EntityPool | None, str | None]:
             try:
                 data = await client.get_json(
