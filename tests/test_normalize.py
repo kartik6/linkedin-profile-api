@@ -192,3 +192,41 @@ class TestMerge:
     def test_empty_list_counts_as_a_gap(self):
         merged = merge_profiles(Profile(skills=[]), Profile(skills=[Skill(name="Rust")]))
         assert merged.skills[0].name == "Rust"
+
+
+class TestResolvedReferences:
+    """The full decoration turns URN pointers into names.
+
+    Without it the API returns `geoLocation: {geoUrn: "urn:li:fsd_geo:..."}`,
+    `industryUrn` and `employmentTypeUrn` with nothing to resolve them against,
+    so four fields came back as opaque identifiers or not at all.
+    """
+
+    def test_location_gets_a_display_name(self, full_decoration, ref):
+        pool = EntityPool.from_payload(full_decoration)
+        location = from_entity_pool(pool, ref).location
+        assert location.full
+        assert location.country
+        assert location.country_code == "IN"
+
+    def test_city_is_not_filled_with_the_region_name(self, full_decoration, ref):
+        """LinkedIn returns the same string with and without the country for a
+        region. Copying it into `city` would assert something untrue."""
+        pool = EntityPool.from_payload(full_decoration)
+        location = from_entity_pool(pool, ref).location
+        assert location.city != location.full
+
+    def test_industry_resolves_to_a_name(self, full_decoration, ref):
+        industry = from_entity_pool(EntityPool.from_payload(full_decoration), ref).industry
+        assert industry and not industry.startswith("urn:")
+
+    def test_employment_type_resolves_from_its_urn(self, full_decoration, ref):
+        roles = from_entity_pool(EntityPool.from_payload(full_decoration), ref).experience
+        assert any(r.employment_type for r in roles)
+
+    def test_companies_carry_names_and_logos(self, full_decoration, ref):
+        roles = from_entity_pool(EntityPool.from_payload(full_decoration), ref).experience
+        named = [r for r in roles if r.company and r.company.name]
+        assert named
+        assert any(r.company.logo for r in named)
+        assert any(r.company.linkedin_url for r in named)

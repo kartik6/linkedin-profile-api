@@ -60,6 +60,11 @@ MULTILOCALE = re.compile(r"^multiLocale(.+)$")
 # the fixture would hide a real behaviour instead of testing it.
 DISTINCT = {"name", "title", "companyName", "schoolName", "authority", "licenseNumber"}
 
+# Reference data, not personal data. "Full-time" and "Computer Software" say
+# nothing about a person, and scrubbing them breaks the parsers that map these
+# values onto our own enums and fields.
+REFERENCE_TYPES = ("EmploymentType", "Industry", "Geo", "Country", "Locale")
+
 # The exploratory probes used short ad hoc names. Fixtures use the real route
 # segment, so a reader can map a fixture straight onto the URL that produced it.
 CANONICAL_ROUTE = {
@@ -85,6 +90,12 @@ def scrub(node: Any, counters: dict[str, int] | None = None) -> Any:
     counters = {} if counters is None else counters
 
     if isinstance(node, dict):
+        kind = str(node.get("$type", "")).rsplit(".", 1)[-1]
+        if kind in REFERENCE_TYPES:
+            # Keep every value, but still rewrite any identifier inside it.
+            return {k: scrub(v, counters) if not isinstance(v, str) else
+                    REAL_ID_RE.sub(FAKE_ID, v) for k, v in node.items()}
+
         # Resolve a dict's own replacements first, so `name` and
         # `multiLocaleName` in the same entity end up agreeing.
         local = {
@@ -124,12 +135,13 @@ def main() -> None:
     FIXTURES.mkdir(parents=True, exist_ok=True)
     written = []
 
-    for name in ("dash_query", "dash_direct"):
+    for name in ("dash_query", "dash_direct", "full"):
         src = CAPTURES / f"{name}.json"
         if src.exists():
             body = scrub(json.loads(src.read_text()))
-            (FIXTURES / f"{name}.json").write_text(json.dumps(body, indent=2))
-            written.append(f"{name}.json")
+            target = "dash_full_decoration" if name == "full" else name
+            (FIXTURES / f"{target}.json").write_text(json.dumps(body, indent=2))
+            written.append(f"{target}.json")
 
     sections_src = CAPTURES / "sections.json"
     if sections_src.exists():

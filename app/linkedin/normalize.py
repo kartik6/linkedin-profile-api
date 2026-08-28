@@ -222,14 +222,29 @@ def _pool_location(pool: EntityPool, entity: dict[str, Any]) -> Location | None:
             location_entity.get("basicLocation") or {}
         ).get("countryCode")
     country = text_of(entity, "geoCountryName")
-
-    geo = pool.linked(entity, "geoLocation", "geo")
-    if geo and not full:
-        full = text_of(geo, "defaultLocalizedName") or text_of(geo, "name")
-
     city = None
+
+    # Verified 2026-08-28: the profile carries
+    #   "geoLocation": {"*geo": "urn:li:fsd_geo:90009633"}
+    # and the Geo entity itself holds the display name. It only appears in
+    # `included` when the request asked for the full decoration, so this stays
+    # optional rather than required.
+    wrapper = entity.get("geoLocation")
+    geo = pool.linked(wrapper, "geo") if isinstance(wrapper, dict) else None
+    if geo:
+        full = full or text_of(geo, "defaultLocalizedName") or text_of(geo, "name")
+        # Only a city when it actually differs from the full string. For a
+        # region like "Greater Bengaluru Area" LinkedIn returns the same value
+        # for both, and calling that a city would be wrong.
+        without_country = text_of(geo, "defaultLocalizedNameWithoutCountryName")
+        if without_country and without_country != full:
+            city = city or without_country
+        country_entity = pool.linked(geo, "country")
+        if country_entity:
+            country = country or text_of(country_entity, "defaultLocalizedName")
+
     if full and "," in full:
-        city = full.split(",")[0].strip()
+        city = city or full.split(",")[0].strip()
         if not country:
             country = full.split(",")[-1].strip()
 

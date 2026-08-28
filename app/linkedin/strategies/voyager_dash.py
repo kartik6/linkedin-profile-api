@@ -43,7 +43,12 @@ from __future__ import annotations
 
 import logging
 
-from app.errors import LinkedInAPIError, ProfileNotFound
+from app.errors import (
+    AuthenticationFailed,
+    ChallengeRequired,
+    LinkedInAPIError,
+    ProfileNotFound,
+)
 from app.linkedin.client import LinkedInClient
 from app.linkedin.entities import EntityPool
 from app.linkedin.normalize import from_entity_pool
@@ -76,6 +81,25 @@ SECTION_ROUTES: dict[str, str] = {
 # the two. It costs a request and adds no field.
 SKIPPED_ROUTES = ("profilePositionGroups",)
 
+# A Rest.li decoration is a server side projection. This one expands the URN
+# references the plain call leaves dangling, so one request brings back Geo,
+# Industry, EmploymentType, Company and School as real entities rather than
+# pointers. Verified 2026-08-28: 120 KB, 129 entities, and it is where the
+# location name "Greater Bengaluru Area" comes from.
+#
+# It truncates collections though — 10 of 11 positions, 20 of 39 skills — so
+# it is used for resolution, not for completeness. The section routes still
+# supply the full lists.
+#
+# The -96 is a version. LinkedIn retires these, so a failure here is expected
+# eventually and must not be fatal.
+FULL_DECORATION = "com.linkedin.voyager.dash.deco.identity.profile.FullProfileWithEntities-96"
+
+# Rest.li pages collections. Ask for a large page, then follow up if the
+# reported total is larger than what came back.
+PAGE_SIZE = 100
+MAX_PAGES = 5
+
 
 class VoyagerDashStrategy(Strategy):
     name = "voyager_dash"
@@ -96,11 +120,24 @@ class VoyagerDashStrategy(Strategy):
     async def _top_card(
         self, client: LinkedInClient, ref: ProfileRef
     ) -> tuple[EntityPool, str]:
-        data = await client.get_json(
-            "/identity/dash/profiles",
-            params={"q": "memberIdentity", "memberIdentity": ref.public_identifier},
-            referer=ref.canonical_url,
-        )
+        params = {"q": "memberIdentity", "memberIdentity": ref.public_identifier}
+        try:
+            data = await client.get_json(
+                "/identity/dash/profiles",
+                params={**params, "decorationId": FULL_DECORATION},
+                referer=ref.canonical_url,
+            )
+        except (AuthenticationFailed, ChallengeRequired):
+            # Not the decoration's fault. Retrying without it would spend a
+            # second request on a session LinkedIn has already rejected.
+            raise
+        except LinkedInAPIError as exc:
+            # The decoration id carries a version number. When LinkedIn retires
+            # it we lose the resolved names, not the profile.
+            log.warning("Decoration %s failed (%s). Falling back.", FULL_DECORATION, exc.code)
+            data = await client.get_json(
+                "/identity/dash/profiles", params=params, referer=ref.canonical_url
+            )
         pool = EntityPool.from_payload(data)
         entity = pool.first("Profile", "MiniProfile")
         if entity is None:
@@ -136,15 +173,32 @@ class VoyagerDashStrategy(Strategy):
 
         async def one(route: str) -> tuple[str, EntityPool | None, str | None]:
             try:
-                data = await client.get_json(
-                    f"/identity/dash/{route}",
-                    # Pass the URN raw. httpx percent encodes the colons into
-                    # %3A, which is the form we verified against LinkedIn.
-                    # Pre-encoding it here would double encode to %253A.
-                    params={"q": "viewee", "profileUrn": urn},
-                    referer=ref.canonical_url,
-                )
-                return route, EntityPool.from_payload(data), None
+                section = EntityPool()
+                start = 0
+                for _ in range(MAX_PAGES):
+                    data = await client.get_json(
+                        f"/identity/dash/{route}",
+                        # Pass the URN raw. httpx percent encodes the colons
+                        # into %3A, which is the form we verified against
+                        # LinkedIn. Pre-encoding here double encodes to %253A.
+                        params={
+                            "q": "viewee",
+                            "profileUrn": urn,
+                            "start": start,
+                            "count": PAGE_SIZE,
+                        },
+                        referer=ref.canonical_url,
+                    )
+                    section.merge(EntityPool.from_payload(data))
+                    paging = (data.get("data") or {}).get("paging") or {}
+                    total = paging.get("total")
+                    returned = len(paging.get("*elements") or []) or len(
+                        (data.get("data") or {}).get("*elements") or []
+                    )
+                    start += returned or PAGE_SIZE
+                    if not returned or not isinstance(total, int) or start >= total:
+                        break
+                return route, section, None
             except LinkedInAPIError as exc:
                 return route, None, exc.code
             except Exception:  # noqa: BLE001 - a bad section must not sink the profile

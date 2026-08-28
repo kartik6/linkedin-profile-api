@@ -144,10 +144,11 @@ Knowing that constant lets you read a whole probe sweep without opening a body.
 profile URL
   → vanity name                                    urls.py
   → GET /identity/dash/profiles
-        ?q=memberIdentity&memberIdentity={vanity}   one call, returns the top card
+        ?q=memberIdentity&memberIdentity={vanity}
+        &decorationId=...FullProfileWithEntities-96  top card, references resolved
   → read entityUrn from the Profile in `included`
   → GET /identity/dash/profile{Section}s
-        ?q=viewee&profileUrn={urn}                  one call per section
+        ?q=viewee&profileUrn={urn}&start=0&count=100  one call per section, paged
   → merge every `included` array into one pool
   → normalize into our schema
 ```
@@ -327,19 +328,13 @@ Checked field by field against a real captured profile, not asserted.
 | name | verified | `first_name`, `last_name`, `full_name` |
 | headline | verified | |
 | about | verified | `summary` on the profile entity |
-| location | **partial** | Only `country_code`. See below. |
+| location | verified | Display name, country and country code |
 | experience | verified | 11 roles, with company, dates and location |
 | education | verified | school, degree, field, grade, dates |
 | skills | verified | 20, deduplicated by name |
 | certifications | verified | name, authority, licence number, dates |
 | languages | **unverified** | Route works, but the captured profile lists none |
 | profile images | verified | every size, plus `expires_at` |
-
-Two of those are honest gaps rather than bugs.
-
-**Location** comes back as `geoLocation: {geoUrn: "urn:li:fsd_geo:..."}` — a
-pointer with no name attached. `IN` satisfies the field and tells a reader
-almost nothing.
 
 **Languages** is a coverage gap. The route returns a valid empty collection
 because the person we captured lists no languages, so that parser has never
@@ -512,7 +507,7 @@ has none.
 ## Tests
 
 ```bash
-make test     # 118 tests, no credentials needed
+make test     # 123 tests, no credentials needed
 make lint
 make e2e      # the whole stack against a mock LinkedIn, 5 failure modes
 ```
@@ -600,17 +595,12 @@ than looping, and `/api/v1/session` reports it. Replace the cookies.
 of 11 real positions. `profilePositions` does not return it. The field stays in
 the schema and is always `null`.
 
-**Location is only a country code.** The API returns
-`location: {countryCode: "IN"}` and `geoLocation: {geoUrn: ...}`. The display
-name — "Greater Bengaluru Area" — is not in the response. Resolving `geoUrn`
-needs a route we have not mapped.
-
-**Company and industry are URNs, not names.** `companyUrn` and `industryUrn` come
-back unresolved, and `included` is empty on these routes, so there are no logos
-or industry names without extra calls.
-
-**Employment type is a URN.** `employmentTypeUrn: urn:li:fsd_employmentType:20`
-with no lookup table, so `employment_type` is always `null`.
+**Resolved names depend on a versioned decoration.** Location, industry,
+employment type, company names and logos all come from
+`decorationId=...FullProfileWithEntities-96`. The `-96` is a version and
+LinkedIn retires these. When it goes, the profile still returns; those fields
+fall back to bare URNs until the id is updated. The failure is logged and the
+request continues.
 
 **Follower and connection counts are absent** from the routes we verified.
 

@@ -89,3 +89,14 @@ def isolated_env(monkeypatch):
     yield
     get_settings.cache_clear()
     app.deps._limiter = None
+
+
+@pytest.fixture
+def full_decoration() -> dict:
+    """The response with decorationId=FullProfileWithEntities-96.
+
+    One call, 129 entities, and it resolves the URN references the plain call
+    leaves dangling: Geo, Industry, EmploymentType, Company and School come
+    back as real entities rather than pointers.
+    """
+    return load("dash_full_decoration.json")
