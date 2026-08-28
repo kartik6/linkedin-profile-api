@@ -16,6 +16,8 @@ Modes:
     dead        401 everywhere, as a stale li_at behaves
     challenge   302 to /checkpoint/challenge, as a bot check behaves
     thin        the top card answers, every section fails with 500
+    no-decoration  the decoration id is rejected, so the service must fall
+                   back to fetching every section one by one
 """
 
 from __future__ import annotations
@@ -77,6 +79,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/voyager/api/identity/dash/profiles":
             if query.get("q", [""])[0] != "memberIdentity":
                 return self._send(400, '{"status":400}')
+            if "decorationId" in query:
+                if MODE == "no-decoration":
+                    # How a retired decoration id behaves: the resource exists,
+                    # the argument does not.
+                    return self._send(400, '{"status":400}')
+                return self._send(200, json.dumps(load("dash_full_decoration.json")))
             return self._send(200, json.dumps(load("dash_query.json")))
 
         if path.startswith("/voyager/api/identity/dash/profile"):
@@ -104,7 +112,7 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=9100)
     parser.add_argument(
         "--mode", default="all",
-        choices=["all", "handshake", "dead", "challenge", "thin"],
+        choices=["all", "handshake", "dead", "challenge", "thin", "no-decoration"],
     )
     args = parser.parse_args()
     MODE = args.mode

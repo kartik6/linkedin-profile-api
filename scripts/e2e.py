@@ -30,7 +30,9 @@ EXPECTATIONS = {
     # the first live deployment.
     "handshake": ("voyager_dash", {"experience": 11, "skills": 20, "certifications": 12}),
     # Sections all fail. The top card must still come back, marked partial.
-    "thin": ("voyager_dash", {"experience": 0, "skills": 0, "certifications": 0}),
+    "thin": ("voyager_dash", {"experience": 10, "skills": 20, "certifications": 12}),
+    # The decoration id is retired. One call per section instead, same result.
+    "no-decoration": ("voyager_dash", {"experience": 11, "skills": 20, "certifications": 12}),
     # A stale cookie must be named as such, not reported as a missing profile.
     "dead": ("ERROR:linkedin_session_invalid", {}),
     # A bot check must be named as such.

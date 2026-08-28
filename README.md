@@ -517,16 +517,21 @@ reported in `meta.warnings`.
 ```bash
 make test     # 133 tests, no credentials needed
 make lint
-make e2e      # the whole stack against a mock LinkedIn, 5 failure modes
+make e2e      # the whole stack against a mock LinkedIn, 6 modes
 ```
 
 ```
-ok   all         strategy=voyager_dash  complete=1.0    experience=11 skills=20 certs=12
-ok   handshake   strategy=voyager_dash  complete=1.0    experience=11 skills=20 certs=12
-ok   thin        strategy=voyager_dash  complete=0.667  experience=0  skills=0  certs=0
-ok   dead        http=503 error=linkedin_session_invalid
-ok   challenge   http=503 error=linkedin_challenge_required
+ok   all            complete=1.0   experience=11 skills=20 certs=12
+ok   handshake      complete=1.0   experience=11 skills=20 certs=12   routing cookie 302
+ok   thin           complete=1.0   experience=10 skills=20 certs=12   sections all 500
+ok   no-decoration  complete=1.0   experience=11 skills=20 certs=12   decoration retired
+ok   dead           http=503 error=linkedin_session_invalid
+ok   challenge      http=503 error=linkedin_challenge_required
 ```
+
+The `no-decoration` mode matters: it rejects the decoration id the way LinkedIn
+will when `-96` is retired, and checks the service still returns a complete
+profile by falling back to one call per section.
 
 **Fixtures come from real captured responses**, scrubbed of personal data by
 `scripts/make_fixtures.py`. The structure is untouched: real field names, real
