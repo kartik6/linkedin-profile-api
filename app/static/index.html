@@ -102,21 +102,44 @@ button:focus-visible{outline:2px solid var(--signal);outline-offset:-2px}
 @media (prefers-color-scheme: light){ .go{color:#fff} }
 
 /* ---- the signature: the request, made visible ---- */
-.trace{
-  display:flex;align-items:center;gap:10px;padding:11px 14px;
-  background:var(--panel-2);border-top:1px solid var(--line);
-  font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--ink-dim);
+/* The command scrolls on its own. The controls never move, so the end of a
+   long URL can never hide behind them. */
+.trace{display:flex;align-items:stretch;background:var(--panel-2);
+  border-top:1px solid var(--line)}
+.trace-cmd{
+  flex:1;min-width:0;display:flex;align-items:center;gap:9px;padding:11px 14px;
   overflow-x:auto;white-space:nowrap;
+  font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--ink-dim);
 }
-.trace .p{color:var(--signal)}
-.trace code{flex:1;min-width:0}
+.trace-cmd::-webkit-scrollbar{height:5px}
+.trace-cmd::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
+.trace-cmd .p{color:var(--signal);flex-shrink:0}
+.trace-cmd code{min-width:0}
+.trace-actions{
+  display:flex;align-items:center;gap:7px;padding:0 12px;flex-shrink:0;
+  border-left:1px solid var(--line);background:var(--panel);
+}
+.toggle{
+  display:inline-flex;align-items:center;gap:7px;
+  font-family:'JetBrains Mono',monospace;font-size:10.5px;letter-spacing:.06em;
+  text-transform:uppercase;color:var(--ink-faint);
+  border:1px solid var(--line);border-radius:var(--radius);
+  padding:4px 9px;background:transparent;white-space:nowrap;
+}
+.toggle .dot{
+  width:6px;height:6px;border-radius:50%;background:var(--line);
+  box-shadow:inset 0 0 0 1px var(--ink-faint);transition:background .15s;
+}
+.toggle:hover{color:var(--ink);border-color:var(--ink-faint)}
+.toggle[aria-pressed=true]{color:var(--signal);border-color:var(--signal)}
+.toggle[aria-pressed=true] .dot{background:var(--signal);box-shadow:none}
 .mini{
   font-family:'JetBrains Mono',monospace;font-size:10.5px;letter-spacing:.06em;
   text-transform:uppercase;color:var(--ink-faint);border:1px solid var(--line);
   border-radius:var(--radius);padding:3px 8px;background:var(--panel);flex-shrink:0;
 }
 .mini:hover{color:var(--ink);border-color:var(--ink-faint)}
-.mini[aria-pressed=true]{color:var(--signal);border-color:var(--signal)}
+
 
 /* ---- readouts ---- */
 .readout{display:none;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));
@@ -208,6 +231,9 @@ footer a:hover{color:var(--signal);text-decoration-color:var(--signal)}
   nav{margin-left:0;width:100%;order:3}
 }
 @media (max-width:640px){
+  .trace{flex-direction:column;align-items:stretch}
+  .trace-actions{border-left:0;border-top:1px solid var(--line);
+    padding:9px 12px;justify-content:flex-end}
   .row{flex-wrap:wrap}
   .go{width:100%;padding:14px}
   .field label{padding:0 10px}
@@ -249,11 +275,17 @@ footer a:hover{color:var(--signal);text-decoration-color:var(--signal)}
       <button class="go" id="go">Fetch profile</button>
     </div>
     <div class="trace">
-      <span class="p">$</span>
-      <code id="curl" class="mono"></code>
-      <button class="mini" id="fresh" aria-pressed="false"
-              title="Skip the cache and ask LinkedIn again">Skip cache</button>
-      <button class="mini" id="copycurl">Copy</button>
+      <div class="trace-cmd">
+        <span class="p">$</span>
+        <code id="curl" class="mono"></code>
+      </div>
+      <div class="trace-actions">
+        <button class="toggle" id="fresh" aria-pressed="false"
+                title="Ask LinkedIn again instead of reading the cached copy">
+          <span class="dot" aria-hidden="true"></span>Skip cache
+        </button>
+        <button class="mini" id="copycurl">Copy</button>
+      </div>
     </div>
     <dl class="readout" id="meta">
       <div class="cell"><dt>Completeness</dt><dd id="m-comp">—</dd>

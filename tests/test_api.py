@@ -271,3 +271,16 @@ class TestConsole:
         body = client.get("/").text
         assert 'id="fresh"' in body
         assert "refresh=true" in body
+
+    def test_the_command_and_its_controls_are_separate_regions(self, client):
+        """The buttons used to sit inside the scrolling command, so the end of
+        a long URL could hide behind them."""
+        body = client.get("/").text
+        assert 'class="trace-cmd"' in body
+        assert 'class="trace-actions"' in body
+        command_start = body.index('class="trace-cmd"')
+        actions_start = body.index('class="trace-actions"')
+        segment = body[command_start:actions_start]
+        assert 'id="curl"' in segment, "the command belongs in the scrolling region"
+        assert 'id="fresh"' not in segment, "controls must sit outside it"
+        assert 'id="copycurl"' not in segment
