@@ -318,6 +318,34 @@ Every field is optional. An empty section usually means the person has nothing
 there — LinkedIn returns a valid empty collection, not an error. Read
 `meta.warnings` to tell that apart from a section call that failed.
 
+### Field coverage
+
+Checked field by field against a real captured profile, not asserted.
+
+| Field | Status | Notes |
+|---|---|---|
+| name | verified | `first_name`, `last_name`, `full_name` |
+| headline | verified | |
+| about | verified | `summary` on the profile entity |
+| location | **partial** | Only `country_code`. See below. |
+| experience | verified | 11 roles, with company, dates and location |
+| education | verified | school, degree, field, grade, dates |
+| skills | verified | 20, deduplicated by name |
+| certifications | verified | name, authority, licence number, dates |
+| languages | **unverified** | Route works, but the captured profile lists none |
+| profile images | verified | every size, plus `expires_at` |
+
+Two of those are honest gaps rather than bugs.
+
+**Location** comes back as `geoLocation: {geoUrn: "urn:li:fsd_geo:..."}` — a
+pointer with no name attached. `IN` satisfies the field and tells a reader
+almost nothing.
+
+**Languages** is a coverage gap. The route returns a valid empty collection
+because the person we captured lists no languages, so that parser has never
+processed a real language entity. Tests pass against zero items, which is not
+the same as working.
+
 `completeness` scores coverage against `experience`, `education` and `skills`
 plus the core scalar fields. Languages, patents and the rest are deliberately
 not scored, because most real profiles have none.
@@ -586,6 +614,11 @@ with no lookup table, so `employment_type` is always `null`.
 
 **Follower and connection counts are absent** from the routes we verified.
 
+**The language parser is unverified.** `profileLanguages` returns 200 with an
+empty collection for the profile we captured, so the parser has never seen a
+real language entity. It is written to a shape observed elsewhere in LinkedIn's
+payloads. Treat it as untested until a profile with languages confirms it.
+
 **14 calls per profile.** One top card plus 13 sections, so a cold fetch takes
 15 to 20 seconds. Cached repeats are instant. Trim `SECTIONS` if you need it
 faster and can live with less.
@@ -604,8 +637,12 @@ returns different data. A stranger sees less than a 1st-degree connection.
 **Image URLs expire.** They are signed and last hours. `expires_at` says when.
 
 **Verified against one profile.** Findings come from a single real profile
-captured on 28 August 2026. Field presence may vary. `scripts/capture.py` is
-how you check another.
+captured on 28 August 2026. Field presence varies between profiles, so a
+section absent there may exist elsewhere. `scripts/capture.py` checks another.
+
+**An absent section is never silent.** A section the service did not request is
+named in `meta.warnings`, so it cannot be confused with a section the person
+genuinely has nothing in. Those two produce identical `[]` output otherwise.
 
 **No browser is used.** The service speaks HTTP directly through `httpx` and
 ships no HTML parser, no Playwright, no Selenium, no headless Chrome. A
