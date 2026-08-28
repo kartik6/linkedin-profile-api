@@ -333,13 +333,14 @@ Checked field by field against a real captured profile, not asserted.
 | education | verified | school, degree, field, grade, dates |
 | skills | verified | 20, deduplicated by name |
 | certifications | verified | name, authority, licence number, dates |
-| languages | **unverified** | Route works, but the captured profile lists none |
+| languages | verified | Names confirmed on a profile that lists four |
 | profile images | verified | every size, plus `expires_at` |
 
-**Languages** is a coverage gap. The route returns a valid empty collection
-because the person we captured lists no languages, so that parser has never
-processed a real language entity. Tests pass against zero items, which is not
-the same as working.
+One caveat remains. `proficiency` is confirmed as the correct field name and
+is read correctly, but every profile captured so far leaves it `null`, so a
+populated value has never been seen. The uppercase-to-readable mapping
+(`NATIVE_OR_BILINGUAL` → `Native Or Bilingual`) is covered by a unit test
+rather than by real data.
 
 `completeness` scores coverage against `experience`, `education` and `skills`
 plus the core scalar fields. Languages, patents and the rest are deliberately
@@ -507,7 +508,7 @@ has none.
 ## Tests
 
 ```bash
-make test     # 123 tests, no credentials needed
+make test     # 126 tests, no credentials needed
 make lint
 make e2e      # the whole stack against a mock LinkedIn, 5 failure modes
 ```
@@ -604,10 +605,10 @@ request continues.
 
 **Follower and connection counts are absent** from the routes we verified.
 
-**The language parser is unverified.** `profileLanguages` returns 200 with an
-empty collection for the profile we captured, so the parser has never seen a
-real language entity. It is written to a shape observed elsewhere in LinkedIn's
-payloads. Treat it as untested until a profile with languages confirms it.
+**Language proficiency has never been seen populated.** Names are verified
+against a real profile listing four. `proficiency` is confirmed as the right
+field name and is read correctly, but it was `null` on every profile captured,
+so the value mapping is covered only by a unit test.
 
 **14 calls per profile.** One top card plus 13 sections, so a cold fetch takes
 15 to 20 seconds. Cached repeats are instant. Trim `SECTIONS` if you need it
@@ -626,8 +627,9 @@ returns different data. A stranger sees less than a 1st-degree connection.
 
 **Image URLs expire.** They are signed and last hours. `expires_at` says when.
 
-**Verified against one profile.** Findings come from a single real profile
-captured on 28 August 2026. Field presence varies between profiles, so a
+**Verified against two profiles.** Findings come from real profiles captured
+on 28 August 2026, plus a second one captured specifically because the first
+listed no languages. Field presence varies between profiles, so a
 section absent there may exist elsewhere. `scripts/capture.py` checks another.
 
 **An absent section is never silent.** A section the service did not request is

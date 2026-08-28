@@ -230,3 +230,45 @@ class TestResolvedReferences:
         assert named
         assert any(r.company.logo for r in named)
         assert any(r.company.linkedin_url for r in named)
+
+
+class TestLanguages:
+    """Verified against a real profile that actually lists languages.
+
+    The main captured subject has none, so `profileLanguages` returned a valid
+    empty collection and every language assertion passed against zero entities.
+    That is a coverage gap, not a passing test, so a second profile was
+    captured specifically to close it.
+    """
+
+    def test_language_names_are_read(self, languages_section, ref):
+        pool = EntityPool.from_payload(languages_section)
+        names = [x.name for x in from_entity_pool(pool, ref).languages]
+        assert len(names) == 4
+        assert all(names)
+
+    def test_proficiency_is_the_right_field_and_may_be_null(
+        self, languages_section, ref
+    ):
+        """Confirmed against the raw payload: `proficiency` is the correct key.
+
+        It is null for all four because this person never set a level. So the
+        field name is verified; a populated value has still never been seen.
+        """
+        raw = [
+            e for e in languages_section["included"]
+            if e.get("$type", "").endswith("Language")
+        ]
+        assert all("proficiency" in e for e in raw)
+        pool = EntityPool.from_payload(languages_section)
+        assert all(x.proficiency is None for x in from_entity_pool(pool, ref).languages)
+
+    def test_an_uppercase_proficiency_is_made_readable(self, ref):
+        """LinkedIn sends NATIVE_OR_BILINGUAL. Callers should not have to."""
+        pool = EntityPool.from_payload({"included": [{
+            "$type": "com.linkedin.voyager.dash.identity.profile.Language",
+            "entityUrn": "urn:li:fsd_profileLanguage:(x,1)",
+            "name": "English",
+            "proficiency": "NATIVE_OR_BILINGUAL",
+        }]})
+        assert from_entity_pool(pool, ref).languages[0].proficiency == "Native Or Bilingual"

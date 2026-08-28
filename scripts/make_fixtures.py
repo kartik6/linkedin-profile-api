@@ -63,7 +63,7 @@ DISTINCT = {"name", "title", "companyName", "schoolName", "authority", "licenseN
 # Reference data, not personal data. "Full-time" and "Computer Software" say
 # nothing about a person, and scrubbing them breaks the parsers that map these
 # values onto our own enums and fields.
-REFERENCE_TYPES = ("EmploymentType", "Industry", "Geo", "Country", "Locale")
+REFERENCE_TYPES = ("EmploymentType", "Industry", "Geo", "Country", "Locale", "Language")
 
 # The exploratory probes used short ad hoc names. Fixtures use the real route
 # segment, so a reader can map a fixture straight onto the URL that produced it.
@@ -135,7 +135,7 @@ def main() -> None:
     FIXTURES.mkdir(parents=True, exist_ok=True)
     written = []
 
-    for name in ("dash_query", "dash_direct", "full"):
+    for name in ("dash_query", "dash_direct", "full", "languages"):
         src = CAPTURES / f"{name}.json"
         if src.exists():
             body = scrub(json.loads(src.read_text()))

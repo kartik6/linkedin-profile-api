@@ -1,0 +1,56 @@
+{
+  "data": {
+    "entityUrn": "urn:li:collectionResponse:5cq1V6KcqQq6F/s0gMbNZF3aSrBBJNuGlo01QpevLmA=",
+    "paging": {
+      "count": 100,
+      "start": 0,
+      "total": 4,
+      "links": []
+    },
+    "*elements": [
+      "urn:li:fsd_profileLanguage:(ACoAAAFAKEIDFAKEIDFAKEIDFAKEIDFAKEIDxxx,609895345)",
+      "urn:li:fsd_profileLanguage:(ACoAAAFAKEIDFAKEIDFAKEIDFAKEIDFAKEIDxxx,609895343)",
+      "urn:li:fsd_profileLanguage:(ACoAAAFAKEIDFAKEIDFAKEIDFAKEIDFAKEIDxxx,609895344)",
+      "urn:li:fsd_profileLanguage:(ACoAAAFAKEIDFAKEIDFAKEIDFAKEIDFAKEIDxxx,609895342)"
+    ],
+    "$type": "com.linkedin.restli.common.CollectionResponse"
+  },
+  "included": [
+    {
+      "multiLocaleName": {
+        "en_US": "Kannada"
+      },
+      "name": "Kannada",
+      "entityUrn": "urn:li:fsd_profileLanguage:(ACoAAAFAKEIDFAKEIDFAKEIDFAKEIDFAKEIDxxx,609895342)",
+      "proficiency": null,
+      "$type": "com.linkedin.voyager.dash.identity.profile.Language"
+    },
+    {
+      "multiLocaleName": {
+        "en_US": "Bengali"
+      },
+      "name": "Bengali",
+      "entityUrn": "urn:li:fsd_profileLanguage:(ACoAAAFAKEIDFAKEIDFAKEIDFAKEIDFAKEIDxxx,609895345)",
+      "proficiency": null,
+      "$type": "com.linkedin.voyager.dash.identity.profile.Language"
+    },
+    {
+      "multiLocaleName": {
+        "en_US": "Hindi"
+      },
+      "name": "Hindi",
+      "entityUrn": "urn:li:fsd_profileLanguage:(ACoAAAFAKEIDFAKEIDFAKEIDFAKEIDFAKEIDxxx,609895344)",
+      "proficiency": null,
+      "$type": "com.linkedin.voyager.dash.identity.profile.Language"
+    },
+    {
+      "multiLocaleName": {
+        "en_US": "English"
+      },
+      "name": "English",
+      "entityUrn": "urn:li:fsd_profileLanguage:(ACoAAAFAKEIDFAKEIDFAKEIDFAKEIDFAKEIDxxx,609895343)",
+      "proficiency": null,
+      "$type": "com.linkedin.voyager.dash.identity.profile.Language"
+    }
+  ]
+}

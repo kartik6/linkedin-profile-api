@@ -100,3 +100,13 @@ def full_decoration() -> dict:
     back as real entities rather than pointers.
     """
     return load("dash_full_decoration.json")
+
+
+@pytest.fixture
+def languages_section() -> dict:
+    """A real profileLanguages response, from a profile that lists four.
+
+    Captured separately because the main subject lists none, which left the
+    language parser passing every test against zero entities.
+    """
+    return load("languages.json")
