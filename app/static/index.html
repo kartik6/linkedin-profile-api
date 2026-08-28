@@ -116,6 +116,7 @@ button:focus-visible{outline:2px solid var(--signal);outline-offset:-2px}
   border-radius:var(--radius);padding:3px 8px;background:var(--panel);flex-shrink:0;
 }
 .mini:hover{color:var(--ink);border-color:var(--ink-faint)}
+.mini[aria-pressed=true]{color:var(--signal);border-color:var(--signal)}
 
 /* ---- readouts ---- */
 .readout{display:none;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));
@@ -250,6 +251,8 @@ footer a:hover{color:var(--signal);text-decoration-color:var(--signal)}
     <div class="trace">
       <span class="p">$</span>
       <code id="curl" class="mono"></code>
+      <button class="mini" id="fresh" aria-pressed="false"
+              title="Skip the cache and ask LinkedIn again">Skip cache</button>
       <button class="mini" id="copycurl">Copy</button>
     </div>
     <dl class="readout" id="meta">
@@ -381,9 +384,20 @@ footer a:hover{color:var(--signal);text-decoration-color:var(--signal)}
   };
   $('copycurl').onclick = e => toClipboard($('curl').textContent, e.currentTarget);
 
+  let skipCache = false;
+  const freshBtn = $('fresh');
+  freshBtn.onclick = () => {
+    skipCache = !skipCache;
+    freshBtn.setAttribute('aria-pressed', String(skipCache));
+    syncCurl();
+  };
+
+  function query(){
+    return '/api/v1/profile?url=' + encodeURIComponent(u.value.trim())
+         + (skipCache ? '&refresh=true' : '');
+  }
   function curlLine(){
-    const target = location.origin + '/api/v1/profile?url=' + encodeURIComponent(u.value.trim());
-    return 'curl "' + target + '"';
+    return 'curl "' + location.origin + query() + '"';
   }
   const syncCurl = () => $('curl').textContent = curlLine();
   u.oninput = syncCurl; syncCurl();
@@ -458,7 +472,7 @@ footer a:hover{color:var(--signal);text-decoration-color:var(--signal)}
     go.innerHTML='<span class="spin"></span>Fetching';
     err.classList.remove('on');
     try{
-      const res=await fetch('/api/v1/profile?url='+encodeURIComponent(url));
+      const res=await fetch(query());
       const body=await res.json();
       if(!res.ok||body.error) showError(body.error, body.message);
       else showResult(body);

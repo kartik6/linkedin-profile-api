@@ -264,3 +264,10 @@ class TestConsole:
     def test_the_page_inlines_its_icon(self, client):
         """Inlined so the tab icon needs no second request."""
         assert "data:image/svg+xml" in client.get("/").text
+
+    def test_the_console_can_skip_the_cache(self, client):
+        """Needed to demo a cold fetch. Without it every repeat shows 0ms from
+        cache, which hides what the service actually does."""
+        body = client.get("/").text
+        assert 'id="fresh"' in body
+        assert "refresh=true" in body
