@@ -44,6 +44,25 @@ h1{font-size:19px;font-weight:700;letter-spacing:-.01em;margin:0}
   text-transform:uppercase;color:var(--signal);
   border:1px solid var(--signal);border-radius:var(--radius);padding:2px 7px;
 }
+nav{display:flex;align-items:center;gap:3px;margin-left:auto;flex-wrap:wrap}
+nav a{
+  font-family:'JetBrains Mono',monospace;font-size:11.5px;letter-spacing:.04em;
+  color:var(--ink-dim);text-decoration:none;padding:6px 10px;border-radius:var(--radius);
+  border:1px solid transparent;white-space:nowrap;
+}
+nav a:hover{color:var(--ink);border-color:var(--line);background:var(--panel)}
+nav a:focus-visible{outline:2px solid var(--signal);outline-offset:1px}
+.nav-primary{
+  display:inline-flex;align-items:baseline;gap:7px;
+  color:var(--bg)!important;background:var(--signal);font-weight:700;
+  border-color:var(--signal)!important;padding:7px 13px;
+}
+.nav-primary:hover{filter:brightness(1.08);background:var(--signal)}
+.nav-note{
+  font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;opacity:.7;
+  border-left:1px solid currentColor;padding-left:7px;
+}
+@media (prefers-color-scheme: light){ .nav-primary{color:#fff!important} }
 .sub{color:var(--ink-dim);font-size:13.5px;margin:0 0 22px;max-width:62ch}
 .sub a{color:var(--ink);text-decoration:underline;text-underline-offset:3px;text-decoration-color:var(--line)}
 .sub a:hover{text-decoration-color:var(--signal)}
@@ -166,9 +185,10 @@ pre.compact{white-space:pre-wrap;word-break:break-all}
 .warns div{font-family:'JetBrains Mono',monospace;font-size:11.5px;margin-top:4px}
 
 footer{margin-top:44px;padding-top:18px;border-top:1px solid var(--line);
-  font-size:12.5px;color:var(--ink-faint);display:flex;gap:18px;flex-wrap:wrap}
-footer a{color:var(--ink-dim);text-decoration:none}
-footer a:hover{color:var(--signal)}
+  font-size:12.5px;color:var(--ink-faint);max-width:70ch;line-height:1.6}
+footer a{color:var(--ink-dim);text-decoration:underline;
+  text-underline-offset:3px;text-decoration-color:var(--line)}
+footer a:hover{color:var(--signal);text-decoration-color:var(--signal)}
 
 .spin{display:inline-block;width:9px;height:9px;border:1.5px solid currentColor;
   border-right-color:transparent;border-radius:50%;animation:sp .7s linear infinite;
@@ -176,6 +196,10 @@ footer a:hover{color:var(--signal)}
 @keyframes sp{to{transform:rotate(360deg)}}
 @media (prefers-reduced-motion:reduce){
   *{animation-duration:.01ms!important;transition-duration:.01ms!important}
+}
+@media (max-width:760px){
+  .mast{gap:10px}
+  nav{margin-left:0;width:100%;order:3}
 }
 @media (max-width:640px){
   .row{flex-wrap:wrap}
@@ -190,11 +214,21 @@ footer a:hover{color:var(--signal)}
     <div class="mast">
       <h1>LinkedIn Profile API</h1>
       <span class="tag">Voyager</span>
+      <nav aria-label="API">
+        <a class="nav-primary" href="/docs">
+          API reference
+          <span class="nav-note">OpenAPI</span>
+        </a>
+        <a href="/redoc">ReDoc</a>
+        <a href="/health">Health</a>
+        <a href="/api/v1/session">Session</a>
+        <a href="https://github.com/kartik6/linkedin-profile-api">Source</a>
+      </nav>
     </div>
     <p class="sub">
       A profile URL in, structured JSON out. Reads LinkedIn's private Voyager API
-      directly over HTTP — no browser. This page is a lens on the API;
-      see <a href="/docs">/docs</a> for the full reference.
+      directly over HTTP — no browser, no HTML parsing. This page is a lens on
+      the API, not a replacement for it.
     </p>
   </header>
 
@@ -251,10 +285,9 @@ footer a:hover{color:var(--signal)}
   </div>
 
   <footer>
-    <a href="/docs">API reference</a>
-    <a href="/health">Health</a>
-    <a href="/api/v1/session">Session status</a>
-    <a href="https://github.com/kartik6/linkedin-profile-api">Source</a>
+    <span>Every route was verified by hand against LinkedIn. The approach, and
+    what it cannot do, is in the
+    <a href="https://github.com/kartik6/linkedin-profile-api#approach">README</a>.</span>
   </footer>
 </div>
 

@@ -47,3 +47,15 @@ def test_rejects_invalid_urls(url):
 def test_canonical_url_is_normalized():
     ref = parse_profile_url("https://in.linkedin.com/in/satyanadella?trk=x")
     assert ref.canonical_url == "https://www.linkedin.com/in/satyanadella/"
+
+
+def test_a_trailing_hyphen_in_the_vanity_name_is_valid():
+    """LinkedIn allows it, and the console's default URL has one.
+
+    Worth its own test: every other fixture here ends in a letter or digit, so
+    a stricter identifier pattern would have passed the whole suite and still
+    rejected the default the page ships with.
+    """
+    ref = parse_profile_url("https://www.linkedin.com/in/kartik-sharma-/")
+    assert ref.public_identifier == "kartik-sharma-"
+    assert ref.canonical_url == "https://www.linkedin.com/in/kartik-sharma-/"

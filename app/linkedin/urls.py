@@ -48,7 +48,7 @@ def parse_profile_url(value: str) -> ProfileRef:
     Accepted forms:
       - a full profile URL, with or without a scheme, subdomain or query string
       - an old style /pub/ URL
-      - a bare public identifier, for example "satyanadella"
+      - a bare public identifier, for example "kartik-sharma-"
       - a member URN
 
     Raises InvalidProfileURL when the input points at something else.

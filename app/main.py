@@ -74,6 +74,8 @@ app = FastAPI(
     lifespan=lifespan,
     description=(
         "Turn a LinkedIn profile URL into structured JSON.\n\n"
+        "There is a console at [/](/) if you would rather paste a URL than "
+        "write a request.\n\n"
         "Send `GET /api/v1/profile?url=https://www.linkedin.com/in/<name>/`.\n\n"
         "The service reads LinkedIn's own Voyager API with a logged in session "
         "cookie, and falls back through three more strategies when a route "
@@ -121,7 +123,7 @@ async def handle_api_error(request: Request, exc: LinkedInAPIError) -> JSONRespo
 class ProfileRequest(BaseModel):
     url: str = Field(
         description="A LinkedIn profile URL, or a bare public identifier.",
-        examples=["https://www.linkedin.com/in/satyanadella/"],
+        examples=["https://www.linkedin.com/in/kartik-sharma-/"],
     )
     refresh: bool = Field(default=False, description="Skip the cache and refetch.")
 
@@ -220,7 +222,7 @@ async def get_profile(
         str,
         Query(
             description="A LinkedIn profile URL, or a bare public identifier.",
-            examples=["https://www.linkedin.com/in/satyanadella/"],
+            examples=["https://www.linkedin.com/in/kartik-sharma-/"],
         ),
     ],
     refresh: Annotated[bool, Query(description="Skip the cache and refetch.")] = False,

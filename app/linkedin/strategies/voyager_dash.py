@@ -6,7 +6,7 @@ Every route and argument here was verified by hand against LinkedIn on
 The chain:
 
     profile URL
-      -> vanity name, for example "satyanadella"
+      -> vanity name, for example "kartik-sharma-"
       -> GET /identity/dash/profiles?q=memberIdentity&memberIdentity=<vanity>
          returns a CollectionResponse whose `included` holds one Profile
       -> read entityUrn from that Profile

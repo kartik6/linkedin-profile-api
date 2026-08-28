@@ -3,7 +3,7 @@
 A hosted API. Send a LinkedIn profile URL. Get structured JSON back.
 
 ```bash
-curl "https://linkedin-profile-api.fly.dev/api/v1/profile?url=https://www.linkedin.com/in/satyanadella/"
+curl "https://linkedin-profile-api.fly.dev/api/v1/profile?url=https://www.linkedin.com/in/kartik-sharma-/"
 ```
 
 **Live API:** https://linkedin-profile-api.fly.dev — paste a profile URL and read the JSON
@@ -338,10 +338,10 @@ Base URL: `https://linkedin-profile-api.fly.dev`
 These all resolve to the same profile:
 
 ```
-https://www.linkedin.com/in/satyanadella/
-https://in.linkedin.com/in/satyanadella?trk=public_profile
-linkedin.com/in/satyanadella
-satyanadella
+https://www.linkedin.com/in/kartik-sharma-/
+https://in.linkedin.com/in/kartik-sharma-?trk=public_profile
+linkedin.com/in/kartik-sharma-
+kartik-sharma-
 urn:li:fsd_profile:ACoAAA1234
 ```
 
@@ -349,7 +349,7 @@ urn:li:fsd_profile:ACoAAA1234
 
 ```bash
 curl -X POST "$BASE/api/v1/profile" -H 'content-type: application/json' \
-  -d '{"url": "https://www.linkedin.com/in/satyanadella/", "refresh": false}'
+  -d '{"url": "https://www.linkedin.com/in/kartik-sharma-/", "refresh": false}'
 ```
 
 ### `POST /api/v1/profiles/batch`
