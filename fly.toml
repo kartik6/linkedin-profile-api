@@ -22,7 +22,7 @@ primary_region = "sin"          # Singapore. Move this near your account's count
   PORT = "8080"
   LOG_LEVEL = "INFO"
   CACHE_TTL_S = "3600"
-  OUTBOUND_RPS = "0.4"          # about one LinkedIn call every 2.5 seconds
+  OUTBOUND_RPS = "3.0"
   RATE_LIMIT_PER_MINUTE = "30"
 
 [http_service]
@@ -30,7 +30,9 @@ primary_region = "sin"          # Singapore. Move this near your account's count
   force_https = true
   auto_stop_machines = "suspend"
   auto_start_machines = true
-  min_machines_running = 0      # raise to 1 to keep the session warm
+  # Keep one machine awake. A suspended machine wakes on the first request,
+  # and that wake time lands on whoever is watching the demo.
+  min_machines_running = 1
 
   [http_service.concurrency]
     type = "requests"

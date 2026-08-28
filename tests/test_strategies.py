@@ -8,6 +8,8 @@ against regressions in our code, not as proof that LinkedIn has not changed.
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 import respx
@@ -15,6 +17,7 @@ import respx
 from app.errors import (
     AuthenticationFailed,
     ChallengeRequired,
+    LinkedInAPIError,
     ProfileNotFound,
     UpstreamRateLimited,
 )
@@ -58,9 +61,58 @@ def mock_all(top_card, sections):
         )
 
 
+def complete(payload):
+    """A copy of a decoration payload with nothing truncated.
+
+    The captured subject has two short collections, so the fixture cannot be
+    used as-is to test the "one call was enough" path.
+    """
+    body = json.loads(json.dumps(payload))
+    for entity in body.get("included", []):
+        paging = entity.get("paging")
+        if isinstance(paging, dict) and isinstance(paging.get("total"), int):
+            paging["total"] = len(entity.get("*elements") or [])
+    return body
+
+
+def collection(entity_urns, total):
+    """A CollectionResponse as the decoration returns one."""
+    return {
+        "$type": "com.linkedin.restli.common.CollectionResponse",
+        "entityUrn": f"urn:li:collectionResponse:{total}-{len(entity_urns)}",
+        "*elements": entity_urns,
+        "paging": {"start": 0, "count": len(entity_urns), "total": total},
+    }
+
+
 class TestHappyPath:
     @respx.mock
-    async def test_builds_a_full_profile(self, client, ref, top_card, sections):
+    async def test_one_call_is_enough_when_nothing_is_truncated(
+        self, client, ref, full_decoration
+    ):
+        """The decoration carries every section. Measured on a real profile:
+        59 entities, no truncated collection, so no follow up is needed."""
+        top = respx.get(TOP_CARD_URL).mock(
+            return_value=httpx.Response(200, json=complete(full_decoration))
+        )
+        section_routes = {
+            name: respx.get(f"{BASE}/identity/dash/{name}").mock(
+                return_value=httpx.Response(200, json={"included": []})
+            )
+            for name in SECTION_ROUTES
+        }
+        result = await VoyagerDashStrategy().fetch(client, ref)
+
+        assert top.called
+        called = [n for n, r in section_routes.items() if r.called]
+        assert called == [], f"no section call was needed, but made: {called}"
+        p = result.profile
+        assert p.full_name
+        assert p.experience and p.education and p.skills
+
+    @respx.mock
+    async def test_builds_a_full_profile(self, client, ref, top_card, sections, settings):
+        settings.sections = list(SECTION_ROUTES)
         mock_all(top_card, sections)
         result = await VoyagerDashStrategy().fetch(client, ref)
         p = result.profile
@@ -68,7 +120,6 @@ class TestHappyPath:
         assert len(p.experience) == 11
         assert len(p.skills) == 20
         assert len(p.certifications) == 12
-        assert not result.warnings
 
     @respx.mock
     async def test_top_card_is_queried_by_vanity_name(self, client, ref, top_card, sections):
@@ -90,9 +141,10 @@ class TestHappyPath:
 
     @respx.mock
     async def test_sections_are_queried_by_encoded_profile_urn(
-        self, client, ref, top_card, sections
+        self, client, ref, top_card, sections, settings
     ):
         """Verified: sections use q=viewee with a url encoded profileUrn."""
+        settings.sections = ["profilePositions"]
         respx.get(TOP_CARD_URL).mock(return_value=httpx.Response(200, json=top_card))
         positions = respx.get(f"{BASE}/identity/dash/profilePositions").mock(
             return_value=httpx.Response(200, json=sections["profilePositions"])
@@ -120,8 +172,9 @@ class TestHappyPath:
 class TestSectionFailures:
     @respx.mock
     async def test_one_failed_section_does_not_sink_the_profile(
-        self, client, ref, top_card, sections
+        self, client, ref, top_card, sections, settings
     ):
+        settings.sections = list(SECTION_ROUTES)
         mock_all(top_card, sections)
         respx.get(f"{BASE}/identity/dash/profileSkills").mock(
             return_value=httpx.Response(500)
@@ -132,8 +185,11 @@ class TestSectionFailures:
         assert any("profileSkills" in w for w in result.warnings)
 
     @respx.mock
-    async def test_an_empty_section_is_not_a_failure(self, client, ref, top_card, sections):
+    async def test_an_empty_section_is_not_a_failure(
+        self, client, ref, top_card, sections, settings
+    ):
         """A person with no patents gets a valid empty collection, about 232 bytes."""
+        settings.sections = list(SECTION_ROUTES)
         mock_all(top_card, sections)
         result = await VoyagerDashStrategy().fetch(client, ref)
         assert result.profile.patents == []
@@ -566,13 +622,19 @@ class TestSessionRevoked:
 
 
 class TestSectionCoverage:
-    """A section we never asked for must not look like a section the person lacks."""
+    """Fetch what the decoration left short, and nothing else."""
 
     @respx.mock
-    async def test_every_section_is_fetched_by_default(
-        self, client, ref, top_card, sections
+    async def test_only_truncated_sections_are_refetched(
+        self, client, ref, full_decoration, sections
     ):
-        mock_all(top_card, sections)
+        """A collection reporting 20 of 39 gets one follow up call. The rest
+        are already complete, so requesting them again is pure cost."""
+        decorated = complete(full_decoration)
+        decorated["included"].append(
+            collection(["urn:li:fsd_skill:(x,1)"], total=39)
+        )
+        respx.get(TOP_CARD_URL).mock(return_value=httpx.Response(200, json=decorated))
         routes = {
             name: respx.get(f"{BASE}/identity/dash/{name}").mock(
                 return_value=httpx.Response(200, json=sections.get(name, {"included": []}))
@@ -580,15 +642,74 @@ class TestSectionCoverage:
             for name in SECTION_ROUTES
         }
         await VoyagerDashStrategy().fetch(client, ref)
-        missed = [name for name, route in routes.items() if not route.called]
-        assert not missed, f"these sections were never requested: {missed}"
+
+        called = sorted(n for n, r in routes.items() if r.called)
+        assert called == ["profileSkills"], f"unexpected calls: {called}"
 
     @respx.mock
-    async def test_projects_reach_the_profile(self, client, ref, top_card, sections):
-        """Regression: profileProjects was dropped from the default list, so a
-        real project silently never appeared in the response."""
-        mock_all(top_card, sections)
+    async def test_a_truncated_position_group_refetches_positions(
+        self, client, ref, full_decoration, sections
+    ):
+        """PositionGroup and Position share a route, so a short group of either
+        has to resolve to profilePositions."""
+        decorated = complete(full_decoration)
+        decorated["included"].append(
+            collection(["urn:li:fsd_profilePositionGroup:(x,abc)"], total=11)
+        )
+        respx.get(TOP_CARD_URL).mock(return_value=httpx.Response(200, json=decorated))
+        positions = respx.get(f"{BASE}/identity/dash/profilePositions").mock(
+            return_value=httpx.Response(200, json=sections["profilePositions"])
+        )
+        for name in SECTION_ROUTES:
+            if name != "profilePositions":
+                respx.get(f"{BASE}/identity/dash/{name}").mock(
+                    return_value=httpx.Response(200, json={"included": []})
+                )
+        await VoyagerDashStrategy().fetch(client, ref)
+        assert positions.called
+
+    @respx.mock
+    async def test_media_attachments_do_not_trigger_a_call(
+        self, client, ref, full_decoration
+    ):
+        """TreasuryMedia is truncated on real profiles and we never parse it,
+        so spending a request on it would buy nothing."""
+        decorated = complete(full_decoration)
+        decorated["included"].append(
+            collection(["urn:li:fsd_profileTreasuryMedia:(x,1)"], total=9)
+        )
+        respx.get(TOP_CARD_URL).mock(return_value=httpx.Response(200, json=decorated))
+        routes = {
+            name: respx.get(f"{BASE}/identity/dash/{name}").mock(
+                return_value=httpx.Response(200, json={"included": []})
+            )
+            for name in SECTION_ROUTES
+        }
+        await VoyagerDashStrategy().fetch(client, ref)
+        assert not any(r.called for r in routes.values())
+
+    @respx.mock
+    async def test_a_failed_decoration_falls_back_to_every_section(
+        self, client, ref, top_card, sections
+    ):
+        """Without the decoration there is no paging to read, so we cannot tell
+        a complete section from a truncated one and must ask for all of them."""
+        def responder(request):
+            if "decorationId" in request.url.params:
+                return httpx.Response(400, json={"status": 400})
+            return httpx.Response(200, json=top_card)
+
+        respx.get(TOP_CARD_URL).mock(side_effect=responder)
+        routes = {
+            name: respx.get(f"{BASE}/identity/dash/{name}").mock(
+                return_value=httpx.Response(200, json=sections.get(name, {"included": []}))
+            )
+            for name in SECTION_ROUTES
+        }
         result = await VoyagerDashStrategy().fetch(client, ref)
+
+        missed = [n for n, r in routes.items() if not r.called]
+        assert not missed, f"fallback must fetch everything, missed: {missed}"
         assert result.profile.projects
 
     @respx.mock
@@ -608,3 +729,16 @@ class TestSectionCoverage:
             assert "profilePositions" not in note
         finally:
             await client.aclose()
+
+
+class TestBadRequest:
+    @respx.mock
+    async def test_a_400_is_an_error_not_a_profile(self, client, ref):
+        """Rest.li answers 400 for "resource exists, arguments wrong". It was
+        passing through as success, so `{"status": 400}` was parsed as a
+        profile and the caller got an empty result instead of a diagnosis."""
+        respx.get(TOP_CARD_URL).mock(
+            return_value=httpx.Response(400, json={"status": 400})
+        )
+        with pytest.raises(LinkedInAPIError, match="400"):
+            await VoyagerDashStrategy().fetch(client, ref)

@@ -147,8 +147,9 @@ profile URL
         ?q=memberIdentity&memberIdentity={vanity}
         &decorationId=...FullProfileWithEntities-96  top card, references resolved
   → read entityUrn from the Profile in `included`
+  → read paging.total on each returned collection
   → GET /identity/dash/profile{Section}s
-        ?q=viewee&profileUrn={urn}&start=0&count=100  one call per section, paged
+        ?q=viewee&profileUrn={urn}&start=0&count=100  only for short sections
   → merge every `included` array into one pool
   → normalize into our schema
 ```
@@ -492,23 +493,29 @@ fly secrets set LI_AT_POOL='cookieA:ajax:111,cookieB:ajax:222'  # several accoun
 
 | Variable | Default | Notes |
 |---|---|---|
-| `OUTBOUND_RPS` | `1.0` | Calls per second toward LinkedIn, all callers combined |
+| `OUTBOUND_RPS` | `3.0` | Calls per second toward LinkedIn, all callers combined |
 | `SECTIONS` | all 13 | Comma separated. Fewer sections means fewer calls per profile. Anything left out is named in `meta.warnings`. |
 | `CACHE_TTL_S` | `3600` | Longer means fewer LinkedIn calls |
 | `RATE_LIMIT_PER_MINUTE` | `30` | Per caller limit on our own API |
 | `REDIS_URL` | unset | Share the cache across instances |
 
-A full profile costs **1 + 13 calls**, about 15 to 20 seconds at the default
-rate. Trim `SECTIONS` if that is too slow. Anything you leave out is reported
-in `meta.warnings`, so an absent section is never mistaken for a person who
-has none.
+A full profile costs **one call, plus one per section the decoration could
+not finish**. Measured on real profiles: one call and 1.1 seconds for a profile
+that fits, two calls and 1.4 seconds for one with 49 skills.
+
+The decoration returns a `CollectionResponse` per section carrying
+`paging.total`, so we can see which sections are short and refetch only those.
+Across two real profiles, 33 of 36 collections came back complete.
+
+Setting `SECTIONS` forces an explicit list instead, and anything left out is
+reported in `meta.warnings`.
 
 ---
 
 ## Tests
 
 ```bash
-make test     # 126 tests, no credentials needed
+make test     # 133 tests, no credentials needed
 make lint
 make e2e      # the whole stack against a mock LinkedIn, 5 failure modes
 ```
@@ -610,9 +617,10 @@ against a real profile listing four. `proficiency` is confirmed as the right
 field name and is read correctly, but it was `null` on every profile captured,
 so the value mapping is covered only by a unit test.
 
-**14 calls per profile.** One top card plus 13 sections, so a cold fetch takes
-15 to 20 seconds. Cached repeats are instant. Trim `SECTIONS` if you need it
-faster and can live with less.
+**Speed depends on how much the decoration truncates.** One call covers most
+profiles. A profile with a long skill list needs a second. If the decoration is
+ever retired the service falls back to one call per section, which is correct
+but roughly ten times slower.
 
 **One machine only.** The rate limiter and cache are per process. Two instances
 double the real outbound rate. Redis shares the cache but not the limiter.

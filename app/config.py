@@ -45,9 +45,9 @@ class Settings(BaseSettings):
 
     # --- pacing. These protect the LinkedIn account, not our server. ---
     outbound_rps: float = Field(
-        default=1.0, description="Requests per second toward LinkedIn, across all callers."
+        default=3.0, description="Requests per second toward LinkedIn, across all callers."
     )
-    outbound_jitter_ms: int = 600
+    outbound_jitter_ms: int = 250
     request_timeout_s: float = 20.0
     max_retries: int = 3
 

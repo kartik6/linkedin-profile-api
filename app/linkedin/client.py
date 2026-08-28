@@ -261,6 +261,15 @@ class LinkedInClient:
                     f"LinkedIn redirected to a check page: {candidate}"
                 )
 
+        if status == 400:
+            # Rest.li answers 400 for "this resource exists, your arguments are
+            # wrong" — we saw it for q=publicIdentifier and for a retired
+            # decoration. It was passing through as success, so the body
+            # {"status": 400} was parsed as a profile and came back empty.
+            raise LinkedInAPIError(
+                "LinkedIn rejected the request arguments (400).",
+                detail=response.text[:200],
+            )
         if status == 401:
             raise AuthenticationFailed("LinkedIn rejected the session cookie (401).")
         if status == 403:

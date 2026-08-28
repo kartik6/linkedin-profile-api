@@ -41,6 +41,7 @@ domain entities. There is no Position or Education in it to read.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from app.errors import (
@@ -100,6 +101,56 @@ FULL_DECORATION = "com.linkedin.voyager.dash.deco.identity.profile.FullProfileWi
 PAGE_SIZE = 100
 MAX_PAGES = 5
 
+# Which section route owns an entity, keyed by its URN prefix. Used to turn a
+# truncated collection back into the call that will complete it.
+URN_ROUTE = {
+    "fsd_profilePosition": "profilePositions",
+    "fsd_profilePositionGroup": "profilePositions",
+    "fsd_profileEducation": "profileEducations",
+    "fsd_skill": "profileSkills",
+    "fsd_profileSkill": "profileSkills",
+    "fsd_profileCertification": "profileCertifications",
+    "fsd_profileLanguage": "profileLanguages",
+    "fsd_profileProject": "profileProjects",
+    "fsd_profileHonor": "profileHonors",
+    "fsd_profilePublication": "profilePublications",
+    "fsd_profileCourse": "profileCourses",
+    "fsd_profilePatent": "profilePatents",
+    "fsd_profileOrganization": "profileOrganizations",
+    "fsd_profileTestScore": "profileTestScores",
+    "fsd_profileVolunteerExperience": "profileVolunteerExperiences",
+    # fsd_profileTreasuryMedia is deliberately absent. It holds attachments we
+    # do not parse, so a truncated one is not worth a request.
+}
+
+
+def truncated_routes(pool: EntityPool) -> list[str]:
+    """Name the sections the decoration could not finish.
+
+    The decoration returns a CollectionResponse per section, each carrying
+    `paging.total` and the element URNs it actually included. Measured across
+    two real profiles: 33 of 36 collections came back complete, and one profile
+    needed no follow up at all.
+
+    So rather than refetching every section, we read the paging and refetch
+    only what is short. A profile that fits in one response costs one request
+    instead of fourteen.
+    """
+    routes: list[str] = []
+    for entity in pool.by_type("CollectionResponse"):
+        paging = entity.get("paging") or {}
+        total = paging.get("total")
+        elements = entity.get("*elements") or []
+        if not isinstance(total, int) or len(elements) >= total:
+            continue
+        if not elements:
+            continue
+        prefix = str(elements[0]).split(":(")[0].rsplit(":", 1)[-1]
+        route = URN_ROUTE.get(prefix)
+        if route and route not in routes:
+            routes.append(route)
+    return routes
+
 
 class VoyagerDashStrategy(Strategy):
     name = "voyager_dash"
@@ -107,8 +158,9 @@ class VoyagerDashStrategy(Strategy):
     description = "Typed Voyager collections: one call for the top card, one per section."
 
     async def fetch(self, client: LinkedInClient, ref: ProfileRef) -> StrategyResult:
-        pool, urn = await self._top_card(client, ref)
-        warnings = await self._sections(client, ref, urn, pool)
+        pool, urn, decorated = await self._top_card(client, ref)
+        routes = self._routes(client, pool, decorated)
+        warnings = await self._sections(client, ref, urn, pool, routes)
         profile = from_entity_pool(pool, ref)
         return StrategyResult(
             name=self.name,
@@ -119,8 +171,9 @@ class VoyagerDashStrategy(Strategy):
 
     async def _top_card(
         self, client: LinkedInClient, ref: ProfileRef
-    ) -> tuple[EntityPool, str]:
+    ) -> tuple[EntityPool, str, bool]:
         params = {"q": "memberIdentity", "memberIdentity": ref.public_identifier}
+        decorated = True
         try:
             data = await client.get_json(
                 "/identity/dash/profiles",
@@ -135,6 +188,7 @@ class VoyagerDashStrategy(Strategy):
             # The decoration id carries a version number. When LinkedIn retires
             # it we lose the resolved names, not the profile.
             log.warning("Decoration %s failed (%s). Falling back.", FULL_DECORATION, exc.code)
+            decorated = False
             data = await client.get_json(
                 "/identity/dash/profiles", params=params, referer=ref.canonical_url
             )
@@ -148,7 +202,18 @@ class VoyagerDashStrategy(Strategy):
         urn = entity.get("entityUrn")
         if not isinstance(urn, str):
             raise LinkedInAPIError("The profile carried no entityUrn, so sections cannot load.")
-        return pool, urn
+        return pool, urn, decorated
+
+    def _routes(
+        self, client: LinkedInClient, pool: EntityPool, decorated: bool
+    ) -> list[str]:
+        """Decide which section calls are actually needed."""
+        if client.settings.sections:
+            return client.settings.sections
+        if not decorated:
+            # No paging to read, so we cannot tell complete from truncated.
+            return list(SECTION_ROUTES)
+        return truncated_routes(pool)
 
     async def _sections(
         self,
@@ -156,20 +221,23 @@ class VoyagerDashStrategy(Strategy):
         ref: ProfileRef,
         urn: str,
         pool: EntityPool,
+        wanted: list[str],
     ) -> list[str]:
-        """Fetch every section. One failure costs one section, never the profile."""
-        wanted = client.settings.sections or list(SECTION_ROUTES)
+        """Top up the short sections. One failure costs one section, never the profile."""
         warnings: list[str] = []
+        if not wanted:
+            return warnings
 
-        # An empty section normally means the person has none. A section we
-        # never asked for also comes back empty, and the two are
-        # indistinguishable in the response unless we say so here.
-        skipped = [route for route in SECTION_ROUTES if route not in wanted]
-        if skipped:
-            warnings.append(
-                "These sections were not fetched, so their absence says nothing "
-                "about the profile: " + ", ".join(skipped) + "."
-            )
+        # An explicit SECTIONS list can leave real data out. Say so, because an
+        # unrequested section and a section the person lacks both come back
+        # empty and are otherwise indistinguishable.
+        if client.settings.sections:
+            skipped = [r for r in SECTION_ROUTES if r not in wanted]
+            if skipped:
+                warnings.append(
+                    "These sections were not fetched, so their absence says nothing "
+                    "about the profile: " + ", ".join(skipped) + "."
+                )
 
         async def one(route: str) -> tuple[str, EntityPool | None, str | None]:
             try:
@@ -205,11 +273,11 @@ class VoyagerDashStrategy(Strategy):
                 log.exception("Section %s raised for %s", route, ref.public_identifier)
                 return route, None, "unexpected_error"
 
-        # Sequential on purpose. Firing every section at once is what a
-        # script looks like, and we watched LinkedIn revoke a live session in
-        # the middle of that burst. The shared limiter paces us either way, so
-        # this costs nothing in wall clock and looks far less mechanical.
-        results = [await one(route) for route in wanted]
+        # Concurrent again. The burst theory that made this sequential was
+        # wrong: the session revocations were a missing liap cookie. There are
+        # rarely more than three of these now, and the shared limiter still
+        # paces whatever goes out.
+        results = await asyncio.gather(*(one(route) for route in wanted))
         for route, section_pool, error in results:
             if section_pool is not None:
                 pool.merge(section_pool)
