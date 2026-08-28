@@ -242,6 +242,17 @@ class TestConsole:
         assert "'/api/v1/profile?url='" in body
         assert "http://localhost" not in body
 
+    def test_the_page_has_no_api_key_field(self, client):
+        """The key is a server side control, not something a visitor supplies.
+
+        The field was hidden until a 401 arrived, which meant it existed only
+        to explain a state most visitors will never reach. The error hint says
+        what to do instead.
+        """
+        body = client.get("/").text
+        assert 'id="keyrow"' not in body
+        assert "X-API-Key" in body, "the error hint should still explain the header"
+
     def test_favicon_is_served_both_ways(self, client):
         """Browsers request /favicon.ico unprompted, and /docs cannot use a
         data URI, so the file is served as well as inlined."""

@@ -183,7 +183,7 @@ pre.compact{white-space:pre-wrap;word-break:break-all}
   color:var(--err);letter-spacing:.04em;text-transform:uppercase}
 .msg p{margin:0;font-size:13.5px;color:var(--ink-dim)}
 .msg code{font-family:'JetBrains Mono',monospace;font-size:12.5px;color:var(--ink)}
-.hint{margin-top:11px;font-size:12.5px;color:var(--ink-faint)}
+.hint{margin-top:11px;font-size:12.5px;color:var(--ink-faint);white-space:pre-wrap}
 
 .warns{display:none;margin-top:14px;font-size:12.5px;color:var(--warn)}
 .warns.on{display:block}
@@ -247,13 +247,6 @@ footer a:hover{color:var(--signal);text-decoration-color:var(--signal)}
       </div>
       <button class="go" id="go">Fetch profile</button>
     </div>
-    <div class="row" id="keyrow" hidden>
-      <div class="field">
-        <label for="k">API key</label>
-        <input id="k" type="password" spellcheck="false" autocomplete="off"
-               placeholder="only if the server sets API_KEYS">
-      </div>
-    </div>
     <div class="trace">
       <span class="p">$</span>
       <code id="curl" class="mono"></code>
@@ -299,13 +292,9 @@ footer a:hover{color:var(--signal);text-decoration-color:var(--signal)}
 <script>
 (function(){
   const $ = id => document.getElementById(id);
-  const u=$('u'), k=$('k'), go=$('go'), pane=$('pane'), treepane=$('treepane');
+  const u=$('u'), go=$('go'), pane=$('pane'), treepane=$('treepane');
   const out=$('out'), meta=$('meta'), chips=$('chips'), warns=$('warns'), err=$('err');
   let data=null, view='fmt';
-
-  // Remember the key locally. It never leaves this browser.
-  try{ const s=localStorage.getItem('lpapi_key'); if(s){k.value=s; $('keyrow').hidden=false;} }catch(e){}
-  try{ if(new URLSearchParams(location.search).has('key')) $('keyrow').hidden=false; }catch(e){}
 
   const esc = s => s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 
@@ -394,10 +383,10 @@ footer a:hover{color:var(--signal);text-decoration-color:var(--signal)}
 
   function curlLine(){
     const target = location.origin + '/api/v1/profile?url=' + encodeURIComponent(u.value.trim());
-    return 'curl "' + target + '"' + (k.value ? ' -H "X-API-Key: ' + k.value + '"' : '');
+    return 'curl "' + target + '"';
   }
   const syncCurl = () => $('curl').textContent = curlLine();
-  u.oninput = syncCurl; k.oninput = syncCurl; syncCurl();
+  u.oninput = syncCurl; syncCurl();
 
   const SECTIONS=['experience','education','skills','certifications','languages',
                   'projects','honors','volunteering','publications','courses',
@@ -443,7 +432,7 @@ footer a:hover{color:var(--signal);text-decoration-color:var(--signal)}
   const HINTS={
     invalid_profile_url:'Use a member profile URL. Company and school pages are not supported.',
     profile_not_found:'LinkedIn has no profile at that identifier. Check the spelling.',
-    unauthorized:'This server has API_KEYS set. Enter a key above.',
+    unauthorized:'This deployment requires a key. Send it as an X-API-Key header:\ncurl -H "X-API-Key: YOUR_KEY" ...',
     rate_limited:'Our own per-caller limit. Wait a moment and try again.',
     linkedin_rate_limited:'LinkedIn throttled the server. Try again shortly.',
     linkedin_session_invalid:'The server\u2019s LinkedIn cookie expired. An operator must replace it.',
@@ -456,7 +445,6 @@ footer a:hover{color:var(--signal);text-decoration-color:var(--signal)}
     $('err-code').textContent=code||'error';
     $('err-msg').textContent=message||'Something went wrong.';
     $('err-hint').textContent=HINTS[code]||'';
-    if(code==='unauthorized') $('keyrow').hidden=false;
     err.classList.add('on');
     out.classList.remove('on'); meta.classList.remove('on');
     chips.classList.remove('on'); warns.classList.remove('on');
@@ -470,9 +458,7 @@ footer a:hover{color:var(--signal);text-decoration-color:var(--signal)}
     go.innerHTML='<span class="spin"></span>Fetching';
     err.classList.remove('on');
     try{
-      const headers={};
-      if(k.value){ headers['X-API-Key']=k.value; try{localStorage.setItem('lpapi_key',k.value);}catch(e){} }
-      const res=await fetch('/api/v1/profile?url='+encodeURIComponent(url),{headers});
+      const res=await fetch('/api/v1/profile?url='+encodeURIComponent(url));
       const body=await res.json();
       if(!res.ok||body.error) showError(body.error, body.message);
       else showResult(body);
@@ -484,7 +470,6 @@ footer a:hover{color:var(--signal);text-decoration-color:var(--signal)}
   }
   go.onclick=fetchProfile;
   u.onkeydown=e=>{ if(e.key==='Enter') fetchProfile(); };
-  k.onkeydown=e=>{ if(e.key==='Enter') fetchProfile(); };
 })();
 </script>
 </body>
